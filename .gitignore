@@ -1,0 +1,10 @@
+/target
+**/target
+.claude/
+Cargo.lock
+*.pdb
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/

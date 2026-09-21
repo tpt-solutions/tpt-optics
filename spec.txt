@@ -1,0 +1,120 @@
+tpt-optics Design Specification (spec.txt)
+1. Overview
+Name: tpt-optics
+Description: A pure-Rust, AI-native computational optics and photonics library. It provides geometric optics (ray tracing), wave optics (Fourier optics, beam propagation), polarization analysis, photonic device modeling, and optical design optimization without C/C++ FFI or external solver dependencies.
+License: MIT (all dependencies must be MIT or compatible; no Apache-2.0-only crates).
+Core Philosophy: Unit-safe, no_std + alloc compatible at the core, differentiable for inverse optical design and neural rendering, and mathematically rigorous via native Rust verification tooling and from-scratch implementations.
+2. Design Principles
+Zero External Solver Dependencies: No Zemax FFI, no CODE V bindings, no RSoft or Lumerical dependencies. All optical solvers (ray-surface intersection, diffraction integrals, mode solvers) are implemented from scratch in pure Rust, leveraging tpt-math for linear algebra and tpt-fem for waveguide eigenmode solving.
+Strict Licensing: No Apache-2.0-only dependencies. The workspace strictly uses MIT, MIT/Apache-2.0 dual, or custom in-house crates.
+Type-State & Dimensional Safety: Compile-time prevention of unit and frame mismatches. Phantom types distinguish between wavelength (nm/μm), optical path length (waves/meters), and angular measures (rad/deg). Coordinate frames track local vs. global optical surfaces.
+Native Formal Verification: Safety and optical invariants enforced via:
+Kani Rust Verifier: For bounded model checking of critical optical algorithms (e.g., proving ray-surface intersection always finds the nearest positive root, or verifying energy conservation in lossless beam splitters).
+Property-Based Testing (proptest): For statistical verification of optical laws (e.g., "Snell's law is reversible", "ABCD matrix determinant equals refractive index ratio for lossless systems", "optical path length is invariant under coordinate transformations").
+3. Workspace Layout
+
+tpt-optics/
+├── Cargo.toml                 # Workspace manifest (strict dependency linting)
+├── crates/
+│   ├── tpt-optics-core/       # Foundation: Wavelength, refractive index, dispersion models, unit-safe types
+│   ├── tpt-optics-geometric/  # Geometric optics: Sequential/non-sequential ray tracing, ABCD matrices, paraxial optics
+│   ├── tpt-optics-wave/       # Wave optics: Fourier optics, BPM, scalar diffraction (Fresnel/Fraunhofer)
+│   ├── tpt-optics-polarization/ # Polarization: Jones/Mueller calculus, Stokes vectors, polarization ray tracing
+│   ├── tpt-optics-waveguide/  # Photonics: Mode solving, coupled-mode theory, photonic crystals, fiber optics
+│   ├── tpt-optics-design/     # Optical design: Lens optimization, merit functions, tolerance analysis
+│   ├── tpt-optics-io/         # File formats: Zemax .zmx, CODE V, OSLO, standard lens geometry import/export
+│   ├── tpt-optics-verify/     # Verification harnesses: Kani proofs, proptest strategies, energy conservation checks
+│   └── tpt-optics/            # Feature-gated umbrella crate re-exporting all above
+├── spec.txt                   # This document
+└── todo.md                    # Phased build tracking
+
+4. Crate Specifications
+tpt-optics-core
+Purpose: The foundational layer. Defines optical physical quantities, material properties, and dispersion models.
+Dependencies: tpt-math (internal, MIT).
+Key Features:
+Unit-safe wrappers for wavelength (nm, μm, m), frequency (THz, Hz), and optical path length.
+Refractive index representations (real, complex for absorbing materials).
+Dispersion models: Sellmeier, Cauchy, Schott, Drude-Lorentz, and tabulated data interpolation.
+Material database with temperature and wavelength dependence.
+no_std + alloc compatible.
+tpt-optics-geometric
+Purpose: Ray optics for lens design, illumination, and imaging systems.
+Key Features:
+Sequential ray tracing: Paraxial and exact ray tracing through lens systems.
+Non-sequential ray tracing: Monte Carlo ray tracing for stray light, illumination, and scattering.
+Surface types: Spherical, aspherical (conic constants, Zernike polynomials), freeform, diffractive.
+ABCD matrix formalism for paraxial system analysis (Gaussian beam propagation, stability criteria).
+Ray-surface intersection with Newton-Raphson refinement for complex surfaces.
+Differentiable ray tracing for gradient-based lens optimization.
+tpt-optics-wave
+Purpose: Wave optics for diffraction, interference, and beam propagation.
+Key Features:
+Scalar diffraction theory: Fresnel and Fraunhofer diffraction integrals.
+Beam Propagation Method (BPM) for guided-wave and free-space propagation.
+Fourier optics: Lens as Fourier transformer, optical transfer functions (OTF/MTF/PSF).
+Gaussian beam propagation (q-parameter, ABCD law, mode matching).
+Coherence theory: Mutual coherence function, van Cittert-Zernike theorem.
+Integration with tpt-dsp for FFT-based diffraction calculations.
+tpt-optics-polarization
+Purpose: Vectorial treatment of light polarization.
+Key Features:
+Jones calculus: Coherent polarization state manipulation (2x2 complex matrices).
+Mueller calculus: Incoherent polarization (4x4 real matrices), depolarization.
+Stokes vectors: Representation of partially polarized light.
+Polarization ray tracing: Tracking polarization state through optical systems.
+Birefringence, dichroism, and optical activity modeling.
+tpt-optics-waveguide
+Purpose: Photonic integrated circuits and fiber optics.
+Key Features:
+Mode solving: Vectorial FEM for waveguide cross-sections (leveraging tpt-fem-eigen).
+Coupled-mode theory: Power exchange between waveguides, gratings, and resonators.
+Photonic crystals: Band structure calculation, defect modes.
+Fiber optics: Step-index, graded-index, photonic crystal fibers.
+Integrated photonics: Mach-Zehnder interferometers, ring resonators, arrayed waveguide gratings.
+tpt-optics-design
+Purpose: Optical system optimization and tolerance analysis.
+Key Features:
+Merit function definition: Spot size, wavefront error, MTF, distortion, chromatic aberration.
+Optimization algorithms: Damped least-squares, global optimization (genetic algorithms, simulated annealing via tpt-systems-optimisation).
+Tolerance analysis: Monte Carlo sensitivity analysis, compensator modeling.
+Automatic differentiation of optical systems for gradient-based optimization.
+tpt-optics-io
+Purpose: Interoperability with industry-standard optical design formats.
+Key Features:
+Zemax .zmx file parser and writer (sequential and non-sequential modes).
+CODE V .seq import/export.
+Standard lens geometry formats (STEP/IGES via tpt-io-standards).
+Glass catalog import (Schott, Ohara, Hoya, CDGM).
+tpt-optics-verify
+Purpose: Mathematical verification of optical algorithms.
+Key Features:
+proptest strategies for generating valid optical systems, surface geometries, and material properties.
+Kani harnesses to prove ray-surface intersection correctness and energy conservation in beam splitters.
+Invariant checks: Verify optical reversibility, ABCD matrix symplecticity, and Snell's law boundary conditions.
+5. Integration & Synergies
+tpt-electromagnetics: tpt-optics handles the high-frequency (optical) regime where tpt-electromagnetics focuses on quasi-static and RF. Together they cover the full EM spectrum.
+tpt-fem: tpt-optics-waveguide leverages tpt-fem-eigen for vectorial mode solving of photonic waveguides and resonators.
+tpt-dsp: Provides FFTs for Fourier optics calculations (diffraction, OTF computation) and signal processing for optical communications.
+tpt-materials: Provides temperature-dependent refractive index data and thermo-optic coefficients for athermalization studies.
+tpt-systems-optimisation: Powers the merit function minimization in tpt-optics-design for automated lens optimization.
+tpt-percept: Enables differentiable optical rendering for computer vision training data generation and neural radiance field (NeRF) optimization.
+AI-Native Agents: Differentiable ray tracing and wave propagation allow tpt-eve / tpt-anima agents to perform inverse optical design, metasurface optimization, or train neural optical models.
+6. Phased Rollout (todo.md Alignment)
+Phase 0: Foundation & Geometric Optics (Weeks 1-3)
+Scaffold workspace with strict dependency linting.
+Implement tpt-optics-core (unit-safe types, dispersion models, material database).
+Build tpt-optics-geometric (sequential ray tracing, ABCD matrices, basic surfaces).
+Verify Snell's law reversibility and paraxial ABCD symplecticity via proptest.
+Phase 1: Wave Optics & Polarization (Weeks 4-6)
+Implement tpt-optics-wave (Fresnel diffraction, Gaussian beams, BPM).
+Build tpt-optics-polarization (Jones/Mueller calculus, Stokes vectors).
+Integration test: Gaussian beam propagation through a lens matches analytical q-parameter transformation.
+Phase 2: Photonics & Design (Weeks 7-9)
+Build tpt-optics-waveguide (mode solving, coupled-mode theory).
+Implement tpt-optics-design (merit functions, optimization interface).
+Write Kani proofs for ray-surface intersection and energy conservation in lossless systems.
+Phase 3: I/O & Advanced Features (Weeks 10-12)
+Build tpt-optics-io (Zemax .zmx parser, glass catalog import).
+Add non-sequential ray tracing and stray light analysis.
+End-to-end test: Import a double-Gauss lens from Zemax, optimize it, and export.
