@@ -1,0 +1,29 @@
+[package]
+name = "tpt-optics-geometric"
+description = "Geometric optics for tpt-optics: sequential and non-sequential ray tracing, spherical/aspheric/Zernike/diffractive surfaces, ABCD matrices, paraxial optics and differentiable tracing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+# Reserved: std-only extras keep the crate no_std + alloc by default.
+std = []
+
+[dependencies]
+tpt-optics-core = { workspace = true }
+libm = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

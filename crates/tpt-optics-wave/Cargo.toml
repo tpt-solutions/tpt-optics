@@ -1,0 +1,26 @@
+[package]
+name = "tpt-optics-wave"
+description = "Wave optics for tpt-optics: scalar diffraction (Fresnel/Fraunhofer/angular spectrum), FFT, Gaussian beams, beam propagation method, PSF/OTF/MTF and coherence theory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+std = []
+
+[dependencies]
+tpt-optics-core = { workspace = true }
+tpt-optics-geometric = { workspace = true }
+libm = { workspace = true }
+
+[lints]
+workspace = true

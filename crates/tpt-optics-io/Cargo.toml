@@ -1,0 +1,24 @@
+[package]
+name = "tpt-optics-io"
+description = "File formats for tpt-optics: Zemax .zmx and CODE V .seq sequential lens import/export, Zemax AGF glass catalogs and an embedded reference glass set"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+std = []
+
+[dependencies]
+tpt-optics-core = { workspace = true }
+tpt-optics-geometric = { workspace = true }
+
+[lints]
+workspace = true

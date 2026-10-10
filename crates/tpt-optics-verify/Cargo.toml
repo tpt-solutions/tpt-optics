@@ -1,0 +1,24 @@
+[package]
+name = "tpt-optics-verify"
+description = "Verification harnesses for tpt-optics: proptest strategies, optical invariants and Kani bounded-model-checking harnesses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+tpt-optics-core = { workspace = true }
+tpt-optics-geometric = { workspace = true }
+tpt-optics-polarization = { workspace = true }
+libm = { workspace = true }
+proptest = { workspace = true, default-features = true }
+
+[lints]
+workspace = true

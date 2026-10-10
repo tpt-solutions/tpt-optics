@@ -1,0 +1,6 @@
+# tpt-optics formatting configuration.
+# Formatting is intentionally close to rustfmt defaults so the codebase stays
+# `cargo fmt`-clean with minimal churn.
+edition = "2021"
+max_width = 100
+use_field_init_shorthand = true

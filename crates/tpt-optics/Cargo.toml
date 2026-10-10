@@ -1,0 +1,48 @@
+[package]
+name = "tpt-optics"
+description = "Pure-Rust computational optics and photonics: geometric ray tracing, wave optics, polarization, waveguides, design optimization and file I/O — no C/C++ FFI, no external solvers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = ["core", "geometric"]
+core = []
+geometric = ["dep:tpt-optics-geometric"]
+wave = ["dep:tpt-optics-wave", "geometric"]
+polarization = ["dep:tpt-optics-polarization"]
+waveguide = ["dep:tpt-optics-waveguide"]
+design = ["dep:tpt-optics-design", "geometric"]
+io = ["dep:tpt-optics-io", "geometric"]
+verify = ["dep:tpt-optics-verify", "geometric", "polarization"]
+full = [
+    "core",
+    "geometric",
+    "wave",
+    "polarization",
+    "waveguide",
+    "design",
+    "io",
+    "verify",
+]
+
+[dependencies]
+tpt-optics-core = { workspace = true }
+tpt-optics-geometric = { workspace = true, optional = true }
+tpt-optics-wave = { workspace = true, optional = true }
+tpt-optics-polarization = { workspace = true, optional = true }
+tpt-optics-waveguide = { workspace = true, optional = true }
+tpt-optics-design = { workspace = true, optional = true }
+tpt-optics-io = { workspace = true, optional = true }
+tpt-optics-verify = { workspace = true, optional = true }
+
+[lints]
+workspace = true

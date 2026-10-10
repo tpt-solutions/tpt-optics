@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: no_std compatibility
+        run: |
+          cargo build -p tpt-optics-core --no-default-features
+          cargo build -p tpt-optics-geometric --no-default-features
+          cargo build -p tpt-optics-polarization --no-default-features
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: License / source policy
+        run: cargo deny check licenses sources

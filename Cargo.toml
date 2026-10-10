@@ -1,0 +1,75 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tpt-optics-core",
+    "crates/tpt-optics-geometric",
+    "crates/tpt-optics-wave",
+    "crates/tpt-optics-polarization",
+    "crates/tpt-optics-waveguide",
+    "crates/tpt-optics-design",
+    "crates/tpt-optics-verify",
+    "crates/tpt-optics-io",
+    "crates/tpt-optics",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+repository = "https://github.com/tpt-solutions/tpt-optics"
+homepage = "https://github.com/tpt-solutions/tpt-optics"
+documentation = "https://docs.rs/tpt-optics"
+keywords = ["optics", "photonics", "raytracing", "physics", "simulation"]
+categories = ["science", "simulation", "no-std"]
+readme = "README.md"
+
+[workspace.dependencies]
+# External dependencies (license policy: MIT-only or MIT/Apache-2.0 dual only).
+libm = "0.2"
+proptest = "1"
+
+# Internal crates.
+tpt-optics-core = { path = "crates/tpt-optics-core", version = "0.1.0" }
+tpt-optics-geometric = { path = "crates/tpt-optics-geometric", version = "0.1.0" }
+tpt-optics-wave = { path = "crates/tpt-optics-wave", version = "0.1.0" }
+tpt-optics-polarization = { path = "crates/tpt-optics-polarization", version = "0.1.0" }
+tpt-optics-waveguide = { path = "crates/tpt-optics-waveguide", version = "0.1.0" }
+tpt-optics-design = { path = "crates/tpt-optics-design", version = "0.1.0" }
+tpt-optics-io = { path = "crates/tpt-optics-io", version = "0.1.0" }
+tpt-optics-verify = { path = "crates/tpt-optics-verify", version = "0.1.0" }
+tpt-optics = { path = "crates/tpt-optics", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Numeric/scientific-code style allowances: `as f64` casts are pervasive in
+# kernels, optics prose trips doc_markdown, and catalog literals read better
+# unseparated.
+module_name_repetitions = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+cast_possible_wrap = "allow"
+doc_markdown = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+missing_errors_doc = "allow"
+float_cmp = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

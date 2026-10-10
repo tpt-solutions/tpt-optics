@@ -1,0 +1,6 @@
+# Toolchain pin for reproducible builds.
+# The workspace MSRV is 1.81 (see [workspace.package]); CI and local dev use
+# stable with the fmt/clippy components required by `xtask check`.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

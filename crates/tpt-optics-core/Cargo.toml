@@ -1,0 +1,25 @@
+[package]
+name = "tpt-optics-core"
+description = "Foundation types for tpt-optics: unit-safe optical quantities, refractive index, dispersion models, material database, Fresnel coefficients, complex/dual numbers and small dense linear algebra"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+# Reserved for future std-only helpers; the crate itself is no_std + alloc.
+std = []
+
+[dependencies]
+libm = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "tpt-optics-waveguide"
+description = "Photonics for tpt-optics: slab and fiber mode solving, effective index method, coupled-mode theory, photonic crystals, integrated devices and a scalar FEM mode solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+std = []
+
+[dependencies]
+tpt-optics-core = { workspace = true }
+libm = { workspace = true }
+
+[lints]
+workspace = true
