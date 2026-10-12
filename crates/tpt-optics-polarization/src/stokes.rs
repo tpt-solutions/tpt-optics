@@ -1,6 +1,9 @@
 //! Stokes vectors: the real 4-vector description of (partially) polarized
-//! light: `S = (I, Q, U, V)` with `Q = I_x − I_y`, `U = I_45 − I_135`,
-//! `V = I_RCP − I_LCP`.
+//! light: `S = (I, Q, U, V)` with `Q = I_x − I_y`, `U = I_45 − I_135`.
+//!
+//! Handedness convention (used throughout this crate): `V = −2·Im(E_x·E_y*)`,
+//! so the right-circular state `E_y = −i·E_x` ([`JonesVector::circular_right`])
+//! has `V = −1`. Under this convention `V = I_LCP − I_RCP`.
 
 use crate::jones::JonesVector;
 
@@ -33,9 +36,10 @@ impl StokesVector {
         StokesVector::new(i, i * libm::cos(2.0 * psi), i * libm::sin(2.0 * psi), 0.0)
     }
 
-    /// Fully circular polarization: `sign > 0` right, `sign < 0` left.
+    /// Fully circular polarization: `sign > 0` right (`E_y = −i·E_x`), `sign < 0`
+    /// left. Matches [`StokesVector::from_jones`] of the same Jones state.
     pub fn circular(sign: f64, i: f64) -> Self {
-        StokesVector::new(i, 0.0, 0.0, i * sign.signum())
+        StokesVector::new(i, 0.0, 0.0, -i * sign.signum())
     }
 
     /// Jones vector → Stokes (deterministic, fully polarized).
@@ -129,12 +133,15 @@ mod tests {
         let sl = StokesVector::linear(0.3, 5.0);
         assert!(close(sl.degree_of_polarization(), 1.0, 1e-12));
         assert!(close(sl.azimuth().unwrap(), 0.3, 1e-12));
+        // Right-circular: ellipticity is −π/2 under V = −1 for RCP.
         let sc = StokesVector::circular(1.0, 2.0);
         assert!(close(
             sc.ellipticity().unwrap(),
-            core::f64::consts::FRAC_PI_2,
+            -core::f64::consts::FRAC_PI_2,
             1e-12
         ));
+        let sj = StokesVector::from_jones(&JonesVector::circular_right());
+        assert!(close(sc.s3, sj.s3 * 2.0, 1e-12), "{} vs {}", sc.s3, sj.s3);
         let su = StokesVector::unpolarized(3.0);
         assert!(close(su.degree_of_polarization(), 0.0, 1e-15));
         assert!(su.azimuth().is_none());

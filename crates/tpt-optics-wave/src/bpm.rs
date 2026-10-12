@@ -66,7 +66,6 @@ pub fn bpm_2d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm2dConfig) -> Vec
         apply_index_phase(
             &mut field,
             &profile[iz * cfg.nx..(iz + 1) * cfg.nx],
-            k,
             cfg,
             0.5,
         );
@@ -80,7 +79,6 @@ pub fn bpm_2d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm2dConfig) -> Vec
         apply_index_phase(
             &mut field,
             &profile[iz * cfg.nx..(iz + 1) * cfg.nx],
-            k,
             cfg,
             0.5,
         );
@@ -88,18 +86,14 @@ pub fn bpm_2d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm2dConfig) -> Vec
     field
 }
 
-fn apply_index_phase(
-    field: &mut [Complex<f64>],
-    n_row: &[f64],
-    k: f64,
-    cfg: &Bpm2dConfig,
-    frac: f64,
-) {
+fn apply_index_phase(field: &mut [Complex<f64>], n_row: &[f64], cfg: &Bpm2dConfig, frac: f64) {
+    // The residual phase is k0·(n − n0)·dz with k0 = 2π/λ the vacuum
+    // wavenumber. The reference wavenumber k0·n0 belongs to the free-space
+    // step only, so it must not multiply the index contrast.
+    let k0 = TAU / cfg.wavelength_m;
     for (v, &n_x) in field.iter_mut().zip(n_row.iter()) {
-        // Phase of index contrast against the reference, including the
-        // residual k0·(n − n0) term of the scalar paraxial wave equation.
         let dn = n_x - cfg.n0;
-        let phase = k * dn * cfg.dz * frac;
+        let phase = k0 * dn * cfg.dz * frac;
         *v *= Complex::cis(phase);
     }
 }
@@ -133,7 +127,7 @@ pub fn bpm_3d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm3dConfig) -> Vec
     let mut field = field.to_vec();
     for iz in 0..cfg.nz {
         let plane = &profile[iz * cfg.nx * cfg.ny..(iz + 1) * cfg.nx * cfg.ny];
-        apply_index_phase_3d(&mut field, plane, k, cfg, 0.5);
+        apply_index_phase_3d(&mut field, plane, cfg, 0.5);
         // Free space.
         let mut work = field.clone();
         fft2(&mut work, cfg.ny, cfg.nx, false);
@@ -162,20 +156,15 @@ pub fn bpm_3d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm3dConfig) -> Vec
         }
         fft2(&mut work, cfg.ny, cfg.nx, true);
         field = work;
-        apply_index_phase_3d(&mut field, plane, k, cfg, 0.5);
+        apply_index_phase_3d(&mut field, plane, cfg, 0.5);
     }
     field
 }
 
-fn apply_index_phase_3d(
-    field: &mut [Complex<f64>],
-    plane: &[f64],
-    k: f64,
-    cfg: &Bpm3dConfig,
-    frac: f64,
-) {
+fn apply_index_phase_3d(field: &mut [Complex<f64>], plane: &[f64], cfg: &Bpm3dConfig, frac: f64) {
+    let k0 = TAU / cfg.wavelength_m;
     for (v, &n_xy) in field.iter_mut().zip(plane.iter()) {
-        let phase = k * (n_xy - cfg.n0) * cfg.dz * frac;
+        let phase = k0 * (n_xy - cfg.n0) * cfg.dz * frac;
         *v *= Complex::cis(phase);
     }
 }
@@ -325,5 +314,34 @@ mod tests {
         let peak = out[peak_idx].abs();
         let max = out.iter().map(|c| c.abs()).fold(0.0_f64, f64::max);
         assert!(close(peak, max, 1e-9), "peak stays on axis");
+    }
+}
+
+#[cfg(test)]
+mod phase_convention_tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn uniform_index_accumulates_vacuum_phase() {
+        // A plane wave in a uniform medium of index n = n0 + dn gains
+        // k0·n·dz per step with k0 = 2π/λ (the vacuum wavenumber), not k0·n0·dn.
+        let lambda = 1.0e-6;
+        let (n0, dn, dz) = (1.5, 0.2, 1.0e-6);
+        let cfg = Bpm2dConfig {
+            nx: 8,
+            nz: 1,
+            dx: 0.1e-6,
+            dz,
+            wavelength_m: lambda,
+            n0,
+        };
+        let field = vec![Complex::one(); 8];
+        let profile = vec![n0 + dn; 8];
+        let out = bpm_2d(&field, &profile, &cfg);
+        let expect = TAU / lambda * (n0 + dn) * dz;
+        let diff = (out[0].arg() - expect).rem_euclid(TAU);
+        let wrapped = diff.min(TAU - diff);
+        assert!(wrapped < 1e-9, "phase error {wrapped}");
     }
 }

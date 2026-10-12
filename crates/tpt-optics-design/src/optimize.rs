@@ -277,7 +277,7 @@ pub fn genetic_minimize<O: Objective>(
         // Elitism: carry the best individual unchanged.
         let mut best_i = 0;
         for (i, s) in scores.iter().enumerate() {
-            if *s < scores[best_i] {
+            if merit_key(*s) < merit_key(scores[best_i]) {
                 best_i = i;
             }
         }
@@ -289,7 +289,7 @@ pub fn genetic_minimize<O: Objective>(
                 let mut best = (rng.next_f64() * population as f64) as usize % population;
                 for _ in 0..2 {
                     let cand = (rng.next_f64() * population as f64) as usize % population;
-                    if scores[cand] < scores[best] {
+                    if merit_key(scores[cand]) < merit_key(scores[best]) {
                         best = cand;
                     }
                 }
@@ -324,7 +324,7 @@ pub fn genetic_minimize<O: Objective>(
     }
     let mut best_i = 0;
     for (i, s) in scores.iter().enumerate() {
-        if *s < scores[best_i] {
+        if merit_key(*s) < merit_key(scores[best_i]) {
             best_i = i;
         }
     }
@@ -332,6 +332,16 @@ pub fn genetic_minimize<O: Objective>(
         x: pop[best_i].clone(),
         f: scores[best_i],
         evaluations: evals,
+    }
+}
+
+/// Ordering key for merit values: NaN (an undefined or blocked trace) sorts
+/// after every finite value, so it is never selected as best.
+fn merit_key(f: f64) -> f64 {
+    if f.is_nan() {
+        f64::INFINITY
+    } else {
+        f
     }
 }
 
@@ -403,5 +413,21 @@ mod tests {
         // Determinism.
         let res2 = genetic_minimize(&f, &bounds, 60, 80, 7);
         assert!(close(res.f, res2.f, 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod nan_tests {
+    use super::*;
+
+    #[test]
+    fn nan_merits_are_never_reported_as_best() {
+        // Points with x < 0 are "blocked" (NaN); the GA must still return the
+        // best finite point, never the NaN.
+        let f = |x: &[f64]| if x[0] < 0.0 { f64::NAN } else { x[0] * x[0] };
+        let bounds = [ParamBound { lo: -1.0, hi: 1.0 }];
+        let r = genetic_minimize(&f, &bounds, 20, 30, 3);
+        assert!(r.f.is_finite(), "best f = {}", r.f);
+        assert!(r.x[0] >= 0.0);
     }
 }

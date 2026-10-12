@@ -4,6 +4,7 @@
 //!   stochastic (simulated annealing, real-coded genetic) optimizers.
 //! - [`merit`] — lens merit functions built on sequential ray tracing:
 //!   RMS spot radius, chromatic focal shift, distortion.
+//! - [`wavefront`] — Zernike wavefront-error fit and RMS wavefront merit.
 //! - [`tolerance`] — Monte-Carlo sensitivity analysis with compensators.
 //!
 //! Gradients come from the geometric crate's differentiable tracing
@@ -17,3 +18,4 @@ extern crate alloc;
 pub mod merit;
 pub mod optimize;
 pub mod tolerance;
+pub mod wavefront;

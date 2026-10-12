@@ -328,7 +328,11 @@ impl NsScene {
                     )
                     .unwrap_or_else(|| snell::reflect(ray.direction, normal))
                 };
-                let dir = scatter_direction(obj.scatter, base_dir, normal, &mut rng);
+                // The lobe sits on the outgoing side: reflected light goes back
+                // toward the source (+normal, which is oriented against the
+                // incident ray), transmitted light continues past the surface (−normal).
+                let lobe = if reflected { normal } else { -normal };
+                let dir = scatter_direction(obj.scatter, base_dir, lobe, &mut rng);
                 ray = Ray::new(point_global + dir * 1e-9, dir);
             }
             if !accounted {
@@ -624,5 +628,25 @@ mod tests {
             cfg.ray_count as f64,
             res.absorbed_per_object[0]
         );
+    }
+}
+
+#[cfg(test)]
+mod lobe_side_tests {
+    use super::*;
+
+    #[test]
+    fn lambertian_lobe_stays_on_the_given_side() {
+        // The lobe is a cosine distribution about the vector it is given:
+        // +z for reflection, −z for transmission through a z = 0 surface.
+        let mut rng = Rng::new(7);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let base = Vec3::new(0.0, 0.0, 1.0);
+        for _ in 0..1000 {
+            let up = scatter_direction(ScatterModel::Lambertian, base, normal, &mut rng);
+            assert!(up.z >= -1e-12, "reflected lobe went through: {up:?}");
+            let down = scatter_direction(ScatterModel::Lambertian, base, -normal, &mut rng);
+            assert!(down.z <= 1e-12, "transmitted lobe went back: {down:?}");
+        }
     }
 }

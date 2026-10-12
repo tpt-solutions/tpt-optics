@@ -121,7 +121,8 @@ pub struct StackLayer {
 /// `M = M₁···M_N`, `[B; C] = M [1; ηs]`,
 /// `r = (η₀B − C)/(η₀B + C)`, `t = 2η₀/(η₀B + C)`.
 pub fn stack_r_t(layers: &[StackLayer], wl: Wavelength, n0: f64, ns: f64) -> (f64, f64) {
-    // M = M_1 · M_2 · ··· M_N (matrix product in entry order).
+    // M = M_1 · M_2 · ··· M_N: the first layer (next to the incident medium)
+    // is leftmost, so each new layer multiplies on the right.
     let mut m = [
         [Complex2::new(1.0, 0.0), Complex2::new(0.0, 0.0)],
         [Complex2::new(0.0, 0.0), Complex2::new(1.0, 0.0)],
@@ -134,7 +135,7 @@ pub fn stack_r_t(layers: &[StackLayer], wl: Wavelength, n0: f64, ns: f64) -> (f6
             [Complex2::new(cd, 0.0), Complex2::new(0.0, sd / eta)],
             [Complex2::new(0.0, sd * eta), Complex2::new(cd, 0.0)],
         ];
-        m = mat_mul(&mj, &m);
+        m = mat_mul(&m, &mj);
     }
     let b = m[0][0] + m[0][1].scale(ns);
     let c = m[1][0] + m[1][1].scale(ns);
@@ -299,5 +300,26 @@ mod tests {
         let (r, t) = stack_r_t(&[], wl(550.0), 1.0, 1.5);
         assert!(close(r, 0.04, 1e-12), "R = {r}");
         assert!(close(t, 0.96, 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod stack_order_tests {
+    use super::*;
+
+    #[test]
+    fn asymmetric_quarter_wave_ar_is_reflectionless_in_entry_order() {
+        // Air (n0 = 1) | η1 = 1.5 | η2 | glass (ns = 1.5), quarter-wave layers.
+        // Reflection vanishes when η1²·ns = η2²·n0; reversing the order breaks it.
+        let wl = Wavelength::from_nm(550.0);
+        let eta2 = libm::sqrt(1.5 * 1.5 * 1.5);
+        let q = |eta: f64| StackLayer {
+            index: eta,
+            thickness: 550e-9 / (4.0 * eta),
+        };
+        let (r, _) = stack_r_t(&[q(1.5), q(eta2)], wl, 1.0, 1.5);
+        assert!(r < 1e-9, "entry-order R = {r}");
+        let (r_rev, _) = stack_r_t(&[q(eta2), q(1.5)], wl, 1.0, 1.5);
+        assert!(r_rev > 0.1, "reversed-order R = {r_rev}");
     }
 }

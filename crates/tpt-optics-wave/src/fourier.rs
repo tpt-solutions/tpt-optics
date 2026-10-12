@@ -40,8 +40,9 @@ pub fn lens_fourier_transform(
         }
     }
     fft2_rows_cols(&mut spectrum, n);
-    // scale = dx/(iλf)·e^{ikf}: pure phase times a real factor.
-    let mag = dx / (wavelength_m * f);
+    // Discrete Fourier integral: the area element is dx² (two transverse
+    // axes), so scale = dx²/(iλf)·e^{ikf}: a pure phase times a real factor.
+    let mag = dx * dx / (wavelength_m * f);
     let phase = Complex::cis(k * f - core::f64::consts::FRAC_PI_2);
     for v in &mut spectrum {
         *v = *v * phase * Complex::real(mag);
@@ -222,5 +223,31 @@ mod tests {
                 mtf[k]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod energy_tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn lens_transform_conserves_energy() {
+        // Parseval on the sampled grid: ∫|U'|² = ∫|U|² with the output
+        // pitch dx' = λf/(N·dx) and the two-axis area element dx².
+        let (n, dx, wl, f) = (64usize, 2e-6, 633e-9, 0.1);
+        let field: Vec<Complex<f64>> = (0..n * n)
+            .map(|i| {
+                let ix = (i % n) as f64 - n as f64 / 2.0;
+                let iy = (i / n) as f64 - n as f64 / 2.0;
+                let r2 = (ix * ix + iy * iy) * dx * dx;
+                Complex::real(libm::exp(-r2 / (2.0 * 20e-6 * 20e-6)))
+            })
+            .collect();
+        let out = lens_fourier_transform(&field, n, dx, wl, f);
+        let dx_out = wl * f / (n as f64 * dx);
+        let e_in: f64 = field.iter().map(|v| v.norm_sqr()).sum::<f64>() * dx * dx;
+        let e_out: f64 = out.iter().map(|v| v.norm_sqr()).sum::<f64>() * dx_out * dx_out;
+        assert!((e_out / e_in - 1.0).abs() < 1e-9, "ratio {}", e_out / e_in);
     }
 }

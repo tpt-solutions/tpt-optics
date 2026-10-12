@@ -39,24 +39,57 @@ pub fn bessel_j(nu: i32, x: f64) -> f64 {
             libm::pow(0.5 * x, nu as f64) * inv_fact
         };
     }
-    if ax > 20.0 {
+    // Large-x asymptotics are used for J₀ and J₁ only. Higher orders go
+    // through Miller's recurrence, which is accurate at every x.
+    if ax > 20.0 && nu < 2 {
         return j_asymptotic(nu, x);
     }
+    // J_ν(−x) = (−1)^ν J_ν(x): compute at ax > 0 and restore the sign.
+    let sign = if x < 0.0 && nu % 2 == 1 { -1.0 } else { 1.0 };
     let (j0, j1) = j0_j1_series(ax);
-    match nu {
+    let pos = match nu {
         0 => j0,
-        1 => j1 * x.signum(),
-        _ => {
-            // Upward recurrence J_{ν+1} = 2ν/x · J_ν − J_{ν−1}
-            let mut jm = j0;
-            let mut j = j1 * x.signum();
-            for k in 1..nu {
-                let next = 2.0 * k as f64 / ax * j - jm;
-                jm = core::mem::replace(&mut j, next);
-            }
-            j
+        1 => j1,
+        // Upward recurrence J_{ν+1} = 2ν/x · J_ν − J_{ν−1} is unstable once
+        // ν exceeds x, so use Miller's backward recurrence for ν ≥ 2.
+        _ => miller_j(nu as usize, ax),
+    };
+    sign * pos
+}
+
+/// `J_n(x)` for `x > 0` by Miller's backward recurrence, normalized with
+/// `J₀ + 2Σ J_{2k} = 1`. Stable for every order; the start index is chosen
+/// well beyond `max(n, x)` so the seed error has decayed by the target.
+fn miller_j(n: usize, x: f64) -> f64 {
+    let base = n.max(libm::ceil(x) as usize);
+    let m = 2 * ((base + 20 + libm::sqrt(40.0 * base as f64) as usize) / 2);
+    let mut jp = 0.0; // j_{k+1}
+    let mut jk = 1e-30; // j_k, starting at k = m
+                        // Σ over the normalization identity, with j_m already included.
+    let mut total = 2.0 * jk;
+    let mut j_n = 0.0;
+    for k in (1..=m).rev() {
+        let jkm1 = 2.0 * k as f64 / x * jk - jp;
+        jp = jk;
+        jk = jkm1;
+        let idx = k - 1; // jk now holds j_idx
+        if idx == n {
+            j_n = jk;
+        }
+        if idx == 0 {
+            total += jk;
+        } else if idx % 2 == 0 {
+            total += 2.0 * jk;
+        }
+        if jk.abs() > 1e100 {
+            // Rescale everything together; the ratio j_n / total is unchanged.
+            jk *= 1e-100;
+            jp *= 1e-100;
+            total *= 1e-100;
+            j_n *= 1e-100;
         }
     }
+    j_n / total
 }
 
 /// J₀ and J₁ by series: `J₀ = Σ (−1)^k (x²/4)^k/(k!)²`,
@@ -142,6 +175,29 @@ pub fn bessel_k(nu: i32, x: f64) -> f64 {
     }
 }
 
+/// Asymptotic expansion of `K_ν(x)` for large `x` (A&S 9.7.1), with
+/// `mu = 4ν²`: `√(π/2x)·e^{−x}·Σ_k a_k/x^k`, where
+/// `a_k = Π_{j≤k}(mu − (2j−1)²) / (k!·8^k)`. Summed until the terms stop
+/// shrinking (optimal truncation; error ≈ e^{−2x}, about 1e−7 at x = 8).
+fn k_asymptotic(mu: f64, x: f64) -> f64 {
+    let mut sum = 1.0;
+    let mut term = 1.0;
+    let mut smallest = f64::INFINITY;
+    for k in 1..60u32 {
+        let odd = (2 * k - 1) as f64;
+        term *= (mu - odd * odd) / (k as f64 * 8.0 * x);
+        if term.abs() > smallest {
+            break;
+        }
+        smallest = term.abs();
+        sum += term;
+        if term.abs() < 1e-17 * sum.abs() {
+            break;
+        }
+    }
+    sqrt(core::f64::consts::FRAC_PI_2 / x) * libm::exp(-x) * sum
+}
+
 fn k0_k1(x: f64) -> (f64, f64) {
     if x <= 8.0 {
         // Frobenius series with digamma terms (exact for integer order):
@@ -186,24 +242,7 @@ fn k0_k1(x: f64) -> (f64, f64) {
         }
         (k0, k1)
     } else {
-        // Asymptotic series (A&S 9.7.2 / 9.7.3 style).
-        let ix = 1.0 / x;
-        let e = libm::exp(-x) / sqrt(x);
-        let k0 = e
-            * 1.253_314_14
-            * (1.0
-                + ix * (-0.078_323_58
-                    + ix * (0.021_895_68
-                        + ix * (-0.010_624_46
-                            + ix * (0.005_878_72 + ix * (-0.002_515_40 + ix * 0.000_532_08))))));
-        let k1 = e
-            * 1.253_314_14
-            * (1.0
-                + ix * (0.234_986_19
-                    + ix * (-0.036_556_20
-                        + ix * (0.015_042_68
-                            + ix * (-0.007_803_53 + ix * (0.003_256_14 + ix * (-0.000_682_45)))))));
-        (k0, k1)
+        (k_asymptotic(0.0, x), k_asymptotic(4.0, x))
     }
 }
 
@@ -256,5 +295,79 @@ mod tests {
     #[test]
     fn k_diverges_at_zero() {
         assert!(bessel_k0(1e-6) > 10.0);
+    }
+}
+
+#[cfg(test)]
+mod modified_k_reference_tests {
+    use super::*;
+
+    #[test]
+    fn k0_k1_asymptotic_branch_matches_tabulated_values() {
+        // Reference: K0(10) = 1.7780062316e-5, K1(10) = 1.8648773454e-5.
+        let k0 = bessel_k0(10.0);
+        let k1 = bessel_k1(10.0);
+        assert!(
+            (k0 / 1.778_006_231_6e-5 - 1.0).abs() < 1e-6,
+            "K0(10) = {k0}"
+        );
+        assert!(
+            (k1 / 1.864_877_345_4e-5 - 1.0).abs() < 1e-6,
+            "K1(10) = {k1}"
+        );
+    }
+
+    #[test]
+    fn series_and_asymptotic_branches_join_smoothly() {
+        // x = 8 uses the series, just above 8 the asymptotic expansion.
+        let (series, asym) = (bessel_k0(8.0), bessel_k0(8.0 + 1e-9));
+        assert!((series / asym - 1.0).abs() < 1e-6, "{series} vs {asym}");
+        let (series1, asym1) = (bessel_k1(8.0), bessel_k1(8.0 + 1e-9));
+        assert!((series1 / asym1 - 1.0).abs() < 1e-6, "{series1} vs {asym1}");
+    }
+}
+
+#[cfg(test)]
+mod high_order_tests {
+    use super::*;
+
+    #[test]
+    fn high_order_matches_published_values() {
+        // Upward recurrence loses everything for ν > x; Miller's stays exact.
+        let j10 = bessel_j(10, 1.0);
+        assert!(
+            (j10 / 2.630_615_123_687_4e-10 - 1.0).abs() < 1e-6,
+            "J10(1) = {j10}"
+        );
+        let j2 = bessel_j(2, 3.0);
+        assert!((j2 - 0.486_091_260_585_891).abs() < 1e-9, "J2(3) = {j2}");
+    }
+
+    #[test]
+    fn negative_argument_follows_parity() {
+        // J_ν(−x) = (−1)^ν J_ν(x).
+        // J3(3) from the recurrence J3 = (4/3)J2 − J1 with J1(3) = 0.339058958.
+        assert!((bessel_j(3, -3.0) + 0.309_062_722_25).abs() < 1e-9);
+        assert!((bessel_j(2, -3.0) - 0.486_091_260_585_891).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod large_x_high_order_tests {
+    use super::*;
+
+    #[test]
+    fn high_order_at_large_x_matches_stable_recurrence() {
+        // Upward recurrence is stable for ν ≤ x; build J₅(30) from the
+        // asymptotic J₀, J₁ and compare with the Miller-based value.
+        let x = 30.0;
+        let (mut jm, mut j) = (bessel_j(0, x), bessel_j(1, x));
+        for k in 1..5 {
+            let next = 2.0 * k as f64 / x * j - jm;
+            jm = j;
+            j = next;
+        }
+        let miller = bessel_j(5, x);
+        assert!((miller - j).abs() < 1e-6, "J5(30): {miller} vs {j}");
     }
 }

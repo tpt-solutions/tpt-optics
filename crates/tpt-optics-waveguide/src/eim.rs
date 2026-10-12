@@ -25,18 +25,39 @@ pub struct ChannelGuide {
     pub height: f64,
 }
 
-/// Fundamental-mode effective index of the channel guide via EIM.
+/// Fundamental quasi-TE mode effective index of the channel guide via EIM.
+///
+/// The quasi-TE mode's dominant field is across the lateral interfaces, so
+/// the vertical slab is TE and the lateral slab is TM (see
+/// [`channel_wguide_neff_pol`]).
 ///
 /// Returns `None` when one of the two slab problems has no guided mode
 /// (below cutoff).
 pub fn channel_wguide_neff(guide: &ChannelGuide, wl: Wavelength) -> Option<f64> {
+    channel_wguide_neff_pol(guide, wl, SlabPolarization::Te)
+}
+
+/// Fundamental effective index for a chosen vertical polarization.
+///
+/// `vertical = Te` gives the quasi-TE mode (lateral slab TM); `vertical = Tm`
+/// gives the quasi-TM mode (lateral slab TE). The lateral slab uses the
+/// polarization whose dominant field lies across the lateral interfaces.
+pub fn channel_wguide_neff_pol(
+    guide: &ChannelGuide,
+    wl: Wavelength,
+    vertical: SlabPolarization,
+) -> Option<f64> {
+    let lateral = match vertical {
+        SlabPolarization::Te => SlabPolarization::Tm,
+        SlabPolarization::Tm => SlabPolarization::Te,
+    };
     // Vertical slab (infinite in x).
     let vert = SlabLayer {
         n_core: guide.n_core,
         n_clad: guide.n_clad,
         thickness: guide.height,
     };
-    let mut vmodes = slab_modes(&vert, wl, SlabPolarization::Te);
+    let mut vmodes = slab_modes(&vert, wl, vertical);
     vmodes.sort_by(|a, b| b.n_eff.total_cmp(&a.n_eff));
     let n_vert = vmodes.first().map(|m| m.n_eff)?;
     // Lateral slab with the effective core index.
@@ -45,7 +66,7 @@ pub fn channel_wguide_neff(guide: &ChannelGuide, wl: Wavelength) -> Option<f64> 
         n_clad: guide.n_clad,
         thickness: guide.width,
     };
-    let mut lmodes: Vec<_> = slab_modes(&lat, wl, SlabPolarization::Te);
+    let mut lmodes: Vec<_> = slab_modes(&lat, wl, lateral);
     lmodes.sort_by(|a, b| b.n_eff.total_cmp(&a.n_eff));
     lmodes.first().map(|m| m.n_eff)
 }
@@ -105,5 +126,28 @@ mod tests {
         if let Some(neff) = channel_wguide_neff(&guide, wl(4500.0)) {
             assert!(neff < 1.7, "near-cutoff n_eff should be low: {neff}");
         }
+    }
+}
+
+#[cfg(test)]
+mod quasi_polarization_tests {
+    use super::*;
+
+    #[test]
+    fn quasi_te_index_exceeds_quasi_tm_for_soi_wire() {
+        // A 450 × 220 nm Si wire in SiO₂ at 1550 nm: the quasi-TE mode (field
+        // mostly across the wide, lateral interfaces) has the higher index.
+        let guide = ChannelGuide {
+            n_core: 3.476,
+            n_clad: 1.444,
+            width: 450e-9,
+            height: 220e-9,
+        };
+        let wl = Wavelength::from_nm(1550.0);
+        let te = channel_wguide_neff(&guide, wl).expect("quasi-TE guided");
+        let tm =
+            channel_wguide_neff_pol(&guide, wl, SlabPolarization::Tm).expect("quasi-TM guided");
+        assert!(te > tm, "quasi-TE {te} vs quasi-TM {tm}");
+        assert!(te < guide.n_core && tm > guide.n_clad);
     }
 }

@@ -79,12 +79,12 @@ fn intersect_asphere<T: Scalar>(
             return None;
         }
     } else {
-        // Quadric seed: x^2 + y^2 + (1+k)z^2 - z/c = 0.
+        // Quadric seed: x^2 + y^2 + (1+k)z^2 - 2z/c = 0.
         let ok = T::ONE + k;
         let aa = d.x * d.x + d.y * d.y + ok * d.z * d.z;
-        let half_c = T::ONE / (T::from_f64(2.0) * c);
-        let b = T::from_f64(2.0) * (o.x * d.x + o.y * d.y + ok * o.z * d.z - d.z * half_c);
-        let cc = o.x * o.x + o.y * o.y + ok * o.z * o.z - o.z / c;
+        let inv_c = T::ONE / c;
+        let b = T::from_f64(2.0) * (o.x * d.x + o.y * d.y + ok * o.z * d.z - d.z * inv_c);
+        let cc = o.x * o.x + o.y * o.y + ok * o.z * o.z - T::from_f64(2.0) * o.z * inv_c;
         let disc = b * b - T::from_f64(4.0) * aa * cc;
         if disc < T::ZERO || aa == T::ZERO {
             return None;
@@ -674,45 +674,60 @@ impl ParaxialSystem {
             return None;
         }
         let epd = self.surfaces[stop_index].semi_diameter / y_stop.abs();
-        let fnum = self.effective_focal_length().map(|f| f / epd);
+        // `epd` is a semi-diameter, so the diameter (and the F/#
+        // denominator) is 2·epd.
+        let fnum = self.effective_focal_length().map(|f| f / (2.0 * epd));
         Some((epd, fnum.unwrap_or(f64::NAN)))
     }
 }
 
-/// RMS transverse spot radius at the image surface for a fan of rays.
+/// Ray at field angle `field_angle_deg` (degrees) that crosses the first
+/// surface plane (`z = 0`) at transverse position `(x, 0)`.
 ///
-/// `heights` are ray offsets in meters, launched parallel to the axis from
-/// 100 mm before the first surface at the given field angle (degrees).
+/// It starts 100 mm before that plane, back along the tilted direction, so a
+/// field tilt does not shift the bundle off the pupil point.
+#[must_use]
+pub fn field_ray(x: f64, field_angle_deg: f64) -> Ray<f64> {
+    let theta = field_angle_deg.to_radians();
+    let (s, c) = (libm::sin(theta), libm::cos(theta));
+    // Back along `dir` to z = −0.1 is a distance 0.1/c; the transverse
+    // offset over that distance is −0.1·s/c.
+    Ray::new(Vec3::new(x, -0.1 * s / c, -0.1), Vec3::new(0.0, s, c))
+}
+
+/// RMS transverse spot radius at the image surface for a fan of rays,
+/// measured about the spot centroid.
+///
+/// `heights` are pupil offsets in meters; each ray is launched by
+/// [`field_ray`] at the given field angle (degrees).
 pub fn rms_spot_radius(
     system: &SequentialSystem,
     ctx: TraceContext,
     field_angle_deg: f64,
     heights: &[f64],
 ) -> f64 {
-    let mut sum = 0.0;
-    let mut count = 0usize;
-    let theta = field_angle_deg.to_radians();
+    let mut spot: Vec<(f64, f64)> = Vec::with_capacity(heights.len());
     for &h in heights {
-        let ray = Ray::new(
-            Vec3::new(0.0, 0.0, -0.1),
-            Vec3::new(0.0, libm::sin(theta), libm::cos(theta)),
-        );
-        // Launch at pupil height h along a parallel chief-centered bundle:
-        let origin = Vec3::new(h, 0.0, -0.1);
-        let ray = Ray::new(origin, ray.direction);
-        let res = system.trace(&ray, ctx);
+        let res = system.trace(&field_ray(h, field_angle_deg), ctx);
         if res.blocked {
             continue;
         }
         if let Some(p) = res.points.last() {
-            sum += p.x * p.x + p.y * p.y;
-            count += 1;
+            spot.push((p.x, p.y));
         }
     }
-    if count == 0 {
+    if spot.is_empty() {
         return f64::NAN;
     }
-    sqrt(sum / count as f64)
+    let n = spot.len() as f64;
+    let cx = spot.iter().map(|p| p.0).sum::<f64>() / n;
+    let cy = spot.iter().map(|p| p.1).sum::<f64>() / n;
+    let mean_sq = spot
+        .iter()
+        .map(|p| (p.0 - cx) * (p.0 - cx) + (p.1 - cy) * (p.1 - cy))
+        .sum::<f64>()
+        / n;
+    sqrt(mean_sq)
 }
 
 #[cfg(test)]
@@ -874,5 +889,76 @@ mod tests {
         sys.thickness[1] = bfl;
         let rms = rms_spot_radius(&sys, TraceContext::default(), 0.0, &[0.0, 0.3e-3, 0.6e-3]);
         assert!(rms < 200e-6, "rms = {rms}");
+    }
+}
+
+#[cfg(test)]
+mod seed_and_fnum_tests {
+    use super::*;
+    use crate::ray::Ray;
+    use tpt_optics_core::Vec3;
+
+    #[test]
+    fn quadric_seed_finds_off_axis_hit() {
+        // Sphere R = 50 mm (c = 20 m⁻¹). A ray at height 30 mm hits the
+        // near cap at z = 10 mm, so from z = −10 mm the parameter is 0.02.
+        // A seed with radius 1/(2c) finds no root here.
+        let ray = Ray::new(Vec3::new(0.03, 0.0, -0.01), Vec3::new(0.0, 0.0, 1.0));
+        let hit = intersect_asphere::<f64>(20.0, 0.0, &[0.0; 8], &ray, 0.0);
+        let (t, _, _) = hit.expect("valid off-axis intersection");
+        assert!((t - 0.02).abs() < 1e-9, "t = {t}");
+    }
+
+    #[test]
+    fn fnum_uses_diameter_not_semi_diameter() {
+        // Same BK7-like singlet as the paraxial tests: R = ±100 mm, t = 5 mm.
+        let mut sys = SequentialSystem::new();
+        sys.media[0] = Medium::Const(1.0);
+        sys.push(
+            SeqSurface::aspheric(Asphere::sphere(10.0), 12e-3),
+            5e-3,
+            Medium::Const(1.5168),
+        );
+        sys.push(
+            SeqSurface::aspheric(Asphere::sphere(-10.0), 12e-3),
+            0.0,
+            Medium::Const(1.0),
+        );
+        sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
+        let px = sys.paraxial(TraceContext::default());
+        let (epd, fnum) = px.entrance_pupil(0).expect("stop at surface 0");
+        let efl = px.effective_focal_length().unwrap();
+        assert!((epd - 12e-3).abs() < 1e-12, "semi-diameter {epd}");
+        assert!((fnum - efl / (2.0 * epd)).abs() < 1e-9, "F/# {fnum}");
+    }
+}
+
+#[cfg(test)]
+mod field_launch_tests {
+    use super::*;
+
+    #[test]
+    fn field_ray_crosses_first_plane_at_pupil_point() {
+        // The ray must pass through (x, 0, 0) for any field angle.
+        for &(x, deg) in &[(1e-3, 0.0), (2e-3, 10.0), (-3e-3, 25.0)] {
+            let r = field_ray(x, deg);
+            let t = -r.origin.z / r.direction.z;
+            let p = r.at(t);
+            assert!((p.x - x).abs() < 1e-15, "x {} vs {x}", p.x);
+            assert!(p.y.abs() < 1e-15, "y {} at field {deg}", p.y);
+        }
+    }
+
+    #[test]
+    fn flat_window_spot_is_independent_of_field_angle() {
+        // A plane window is imaged onto itself: its spot must not depend on
+        // the field angle. The old launch offset shifted the bundle by
+        // 0.1·tanθ, which broke this.
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
+        let heights = [0.0, 1e-3, 2e-3, 3e-3];
+        let on = rms_spot_radius(&sys, TraceContext::default(), 0.0, &heights);
+        let off = rms_spot_radius(&sys, TraceContext::default(), 10.0, &heights);
+        assert!((on - off).abs() < 1e-12, "on-axis {on} vs 10° {off}");
     }
 }

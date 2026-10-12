@@ -42,39 +42,43 @@ pub fn bragg_wavelength(n_eff: f64, period: f64) -> f64 {
 }
 
 /// Spectral reflectivity of a uniform grating at detuning `delta_beta`
-/// (1/m) from phase match: `R = κ²·sinh²(sL)/s²`, `s = √(κ² − Δβ²)`
-/// (becomes oscillatory above the stopband).
+/// (1/m) from phase match: `R = κ²G/(1 + κ²G)` with
+/// `G = sinh²(sL)/s²`, `s = √(κ² − Δβ²)`. Beyond the stopband `G` becomes
+/// `sin²(qL)/q²` with `q = √(Δβ² − κ²)`, so the response is oscillatory.
+/// At `Δβ = 0` this reduces to [`grating_reflectivity`] (`tanh²(κL)`).
 #[must_use]
 pub fn grating_spectrum(kappa: f64, length: f64, delta_beta: f64) -> f64 {
     let s2 = kappa * kappa - delta_beta * delta_beta;
-    let (num, den) = if s2 > 0.0 {
-        let s = sqrt(s2);
-        (sinh(s * length), s)
+    let g = if s2 > 0.0 {
+        let sh = libm::sinh(sqrt(s2) * length);
+        sh * sh / s2
+    } else if s2 < 0.0 {
+        let sn = sin(sqrt(-s2) * length);
+        sn * sn / (-s2)
     } else {
-        let s = sqrt(-s2);
-        (sin(s * length), s)
+        length * length
     };
-    let r = kappa * kappa * num * num / (den * den);
-    r.clamp(0.0, 1.0)
+    let kg = kappa * kappa * g;
+    (kg / (1.0 + kg)).clamp(0.0, 1.0)
 }
 
-fn sinh(x: f64) -> f64 {
-    (libm::exp(x) - libm::exp(-x)) * 0.5
-}
-
-/// Resonance wavelengths of a ring resonator: `λ_m = n_g·L/m` (m integer),
-/// equivalently spaced by the free spectral range `FSR = λ²/(n_g·L)`.
+/// Resonance wavelengths of a ring resonator: `m·λ_m = n_eff·L` for integer
+/// `m`, with `L` the ring circumference. The absolute positions need the
+/// effective index; adjacent resonances are spaced by the free spectral
+/// range `λ²/(n_g·L)` (see [`ring_fsr`]), which uses the group index.
 ///
-/// Returns the resonances within `[wl_min, wl_max]`.
-pub fn ring_resonances(n_group: f64, circumference: f64, wl_min: f64, wl_max: f64) -> Vec<f64> {
+/// Returns the resonances within `[wl_min, wl_max]`, in ascending order.
+pub fn ring_resonances(n_eff: f64, circumference: f64, wl_min: f64, wl_max: f64) -> Vec<f64> {
     let mut out = Vec::new();
-    // m = n_g L / λ decreases with λ; scan from the smallest λ.
-    let m_max = libm::ceil(n_group * circumference / wl_min) as i64;
-    for m in 1..=m_max.max(1) {
-        let lam = n_group * circumference / m as f64;
-        if lam >= wl_min && lam <= wl_max {
-            out.push(lam);
-        }
+    if !(wl_min > 0.0 && wl_max >= wl_min && n_eff > 0.0 && circumference > 0.0) {
+        return out;
+    }
+    let optical_length = n_eff * circumference;
+    // λ_m = L_opt/m lies in the window when m ∈ [L_opt/wl_max, L_opt/wl_min].
+    let m_lo = libm::ceil(optical_length / wl_max).max(1.0) as i64;
+    let m_hi = libm::floor(optical_length / wl_min) as i64;
+    for m in m_lo..=m_hi {
+        out.push(optical_length / m as f64);
     }
     out.sort_by(f64::total_cmp);
     out
@@ -154,11 +158,23 @@ mod tests {
         let fsr = ring_fsr(n_g, circ, wl(1550.0));
         // FSR ≈ 1.9 nm
         assert!(fsr > 1.0e-9 && fsr < 3.0e-9, "FSR = {fsr}");
-        let resonances = ring_resonances(n_g, circ, 1548e-9, 1552e-9);
+        // Absolute positions use the effective index (≈2.4 for this wire).
+        let n_eff = 2.4;
+        let resonances = ring_resonances(n_eff, circ, 1540e-9, 1560e-9);
         assert!(resonances.len() >= 2, "{resonances:?}");
-        // Spacing matches the FSR.
+        // Every resonance is an integer order: m·λ = n_eff·L.
+        for &lam in &resonances {
+            let m = n_eff * circ / lam;
+            assert!(close(m, m.round(), 1e-9), "non-integer order {m}");
+        }
+        // Adjacent spacing is λ²/(n_eff·L) near 1550 nm, within 2 % (the
+        // spacing varies with λ² across the window).
         let d = resonances[1] - resonances[0];
-        assert!(close(d, fsr, 0.1 * fsr), "{d} vs {fsr}");
+        let spacing_neff = ring_fsr(n_eff, circ, wl(1550.0));
+        assert!(
+            close(d, spacing_neff, 0.02 * spacing_neff),
+            "{d} vs {spacing_neff}"
+        );
         // Lorentzian shape: half maximum at ±FWHM/2.
         let lam0 = 1550e-9;
         let fwhm = 0.1e-9;
@@ -169,5 +185,26 @@ mod tests {
             1e-9
         ));
         assert!(close(ring_q(lam0, fwhm), 15500.0, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod spectrum_tests {
+    use super::*;
+
+    #[test]
+    fn spectrum_matches_peak_reflectivity_at_phase_match() {
+        for &(k, l) in &[(100.0, 0.01), (500.0, 0.002), (1000.0, 0.05)] {
+            let a = grating_spectrum(k, l, 0.0);
+            let b = grating_reflectivity(k, l);
+            assert!((a - b).abs() < 1e-12, "κ={k} L={l}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn stopband_edge_is_finite_and_far_detuning_is_weak() {
+        let edge = grating_spectrum(100.0, 0.01, 100.0);
+        assert!(edge.is_finite() && (0.0..=1.0).contains(&edge));
+        assert!(grating_spectrum(100.0, 0.01, 1000.0) < 0.1);
     }
 }

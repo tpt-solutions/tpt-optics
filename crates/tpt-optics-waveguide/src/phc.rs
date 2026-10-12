@@ -7,6 +7,7 @@
 //! percent with the defaults used in tests.
 
 use alloc::vec::Vec;
+use core::f64::consts::TAU;
 
 use libm::sqrt;
 
@@ -111,8 +112,11 @@ pub fn pwem_te_bands(epsilon: f64, r_over_a: f64, n_g: usize, n_k: usize) -> Vec
     };
     let ng = n_g as i32;
     let g_max = ng / 2;
-    // Build the eigenproblem for a given k: H[(G),(G')] = |k+G|·|k+G'|·ε^{-1}(G−G')
-    // (Ho–Chan–Soukoulis plane-wave method for E-polarization).
+    // Build the eigenproblem for a given k (lattice constant a = 1, so the
+    // reciprocal vectors are G = 2π·(gx, gy) and k is in radians/a):
+    //   H[G, G'] = (k+G)·(k+G') · ε^{-1}(G−G')
+    // (Ho–Chan–Soukoulis plane-wave method for H_z polarization). The dot
+    // product, not the product of magnitudes, is the correct kernel.
     let gs: Vec<(i32, i32)> = (0..ng)
         .flat_map(|ix| (0..ng).map(move |iy| (ix - g_max, iy - g_max)))
         .collect();
@@ -120,19 +124,19 @@ pub fn pwem_te_bands(epsilon: f64, r_over_a: f64, n_g: usize, n_k: usize) -> Vec
         let n = gs.len();
         let mut h = alloc::vec![0.0; n * n];
         for (i, &(gxi, gyi)) in gs.iter().enumerate() {
+            let (px, py) = (kx + TAU * gxi as f64, ky + TAU * gyi as f64);
             for (j, &(gxj, gyj)) in gs.iter().enumerate() {
                 let dgx = gxi - gxj;
                 let dgy = gyi - gyj;
-                let k1 = sqrt(libm::pow(kx + gxi as f64, 2.0) + libm::pow(ky + gyi as f64, 2.0));
-                let k2 = sqrt(libm::pow(kx + gxj as f64, 2.0) + libm::pow(ky + gyj as f64, 2.0));
-                h[i * n + j] = k1 * k2 * eps_inv(dgx, dgy);
+                let (qx, qy) = (kx + TAU * gxj as f64, ky + TAU * gyj as f64);
+                h[i * n + j] = (px * qx + py * qy) * eps_inv(dgx, dgy);
             }
         }
-        // Eigenvalues of the symmetric H = (ωa/2πc)².
+        // Eigenvalues of the symmetric H = (ω/c)²·a²; ωa/2πc = √λ / 2π.
         let mut eig = h;
         let mut w = alloc::vec![0.0; n];
         jacobi_eigen(&mut eig, &mut w);
-        let mut freqs: Vec<f64> = w.iter().map(|lam| sqrt(lam.max(0.0))).collect();
+        let mut freqs: Vec<f64> = w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect();
         freqs.sort_by(f64::total_cmp);
         freqs.truncate(6);
         freqs
@@ -257,23 +261,48 @@ mod tests {
     }
 
     #[test]
-    fn pwem_square_rods_have_band_gap() {
-        // Classic Silicon rods (ε = 11.56) r = 0.2a in air: TE gap between
-        // bands 1 and 2 roughly in 0.28..0.45 (ωa/2πc).
-        let bands = pwem_te_bands(11.56, 0.2, 7, 8);
-        assert_eq!(bands.len(), 6);
-        let band1_top = bands[0].iter().copied().fold(0.0_f64, f64::max);
-        let band2_bottom = bands[1].iter().copied().fold(f64::INFINITY, f64::min);
-        // Positive-frequency sanity.
+    fn pwem_square_rods_bands_converge_in_plane_waves() {
+        // Silicon rods (ε = 11.56, r = 0.2a) in air, H_z polarization. The
+        // converged bands overlap: this filling has no H_z gap, so the old
+        // gap assertion (which relied on the wrong kernel) is replaced by a
+        // convergence check. Band-1 top: 0.603 (N=5), 0.595 (N=7), 0.561 (N=9), 0.550 (N=11).
+        let coarse = pwem_te_bands(11.56, 0.2, 9, 8);
+        assert_eq!(coarse.len(), 6);
+        let band1_top = coarse[0].iter().copied().fold(0.0_f64, f64::max);
         assert!(band1_top > 0.1 && band1_top < 0.8, "{band1_top}");
-        assert!(band2_bottom > 0.1 && band2_bottom < 1.0, "{band2_bottom}");
-        // H_z gap for these parameters (order-of-magnitude check; exact
-        // edges need a finer plane-wave cutoff).
+        let fine = pwem_te_bands(11.56, 0.2, 11, 8);
+        let fine_top = fine[0].iter().copied().fold(0.0_f64, f64::max);
         assert!(
-            band2_bottom > band1_top + 0.02,
-            "expected a gap: {band1_top} vs {band2_bottom}"
+            (band1_top - fine_top).abs() < 0.05 * fine_top,
+            "N=9 {band1_top} vs N=11 {fine_top}"
         );
-        let mid = 0.5 * (band1_top + band2_bottom);
-        assert!((mid - 0.33).abs() < 0.15, "gap center {mid}");
+    }
+}
+
+#[cfg(test)]
+mod empty_lattice_tests {
+    use super::*;
+    use core::f64::consts::{PI, TAU};
+
+    #[test]
+    fn empty_lattice_matches_folded_light_line() {
+        // ε = 1 is free space: the lowest band is the folded light line,
+        // min_G |k+G|/2π with G = 2π·(gx, gy), at every k-point.
+        let n_k = 4;
+        let bands = pwem_te_bands(1.0, 0.2, 7, n_k);
+        for (i, &band0) in bands[0].iter().enumerate().take(n_k) {
+            let kx = PI * i as f64 / n_k as f64;
+            let mut best = f64::INFINITY;
+            for gx in -2..=2 {
+                for gy in -2..=2 {
+                    let (px, py) = (kx + TAU * gx as f64, TAU * gy as f64);
+                    best = best.min((px * px + py * py).sqrt() / TAU);
+                }
+            }
+            assert!(
+                (band0 - best).abs() < 1e-9,
+                "k-point {i}: {band0} vs {best}"
+            );
+        }
     }
 }

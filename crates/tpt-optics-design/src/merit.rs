@@ -7,7 +7,6 @@
 
 use alloc::vec::Vec;
 
-use tpt_optics_core::Vec3;
 use tpt_optics_geometric::sequential::{rms_spot_radius, SequentialSystem, TraceContext};
 
 /// RMS transverse spot radius (meters) over a pupil fan of fractional
@@ -42,22 +41,19 @@ pub fn chromatic_focal_shift(system: &SequentialSystem, contexts: &[TraceContext
     max - min
 }
 
-/// Relative distortion at a field angle: the paraxial-imaged height versus
-/// the ideal `f·tan(θ)` height, `(y_img − y_ideal)/y_ideal`.
+/// Relative distortion at a field angle: the real chief-ray image height
+/// versus the paraxial chief-ray height, `(y_img − y_ideal)/y_ideal`.
 ///
-/// Traces the chief ray at `field_angle_deg` through the system and reads
-/// the image-plane height.
+/// The paraxial reference is `B·tan(θ)` from the system ABCD matrix, for a
+/// chief ray launched from the first surface (the stop in these designs).
+/// This does not assume the image plane sits at the focus, and it accounts
+/// for the principal-plane offset of thick lenses. The real chief ray is
+/// traced with [`field_ray`](tpt_optics_geometric::sequential::field_ray).
 pub fn distortion(system: &SequentialSystem, ctx: TraceContext, field_angle_deg: f64) -> f64 {
     let theta = field_angle_deg.to_radians();
-    let Some(efl) = system.paraxial(ctx).effective_focal_length() else {
-        return 0.0;
-    };
-    // Chief ray from the entrance at the field angle through the first
-    // vertex plane center.
-    let ray = tpt_optics_geometric::prelude::Ray::new(
-        Vec3::new(0.0, 0.0, -0.1),
-        Vec3::new(0.0, libm::sin(theta), libm::cos(theta)),
-    );
+    let abcd = system.paraxial(ctx).abcd();
+    // Chief ray at the field angle, crossing the first vertex plane on axis.
+    let ray = tpt_optics_geometric::sequential::field_ray(0.0, field_angle_deg);
     let res = system.trace(&ray, ctx);
     if res.blocked {
         return f64::NAN;
@@ -65,7 +61,7 @@ pub fn distortion(system: &SequentialSystem, ctx: TraceContext, field_angle_deg:
     let Some(point) = res.points.last() else {
         return f64::NAN;
     };
-    let y_ideal = efl * libm::tan(theta);
+    let y_ideal = abcd.b * libm::tan(theta);
     if y_ideal.abs() < 1e-15 {
         return 0.0;
     }
@@ -194,5 +190,44 @@ mod tests {
         let res = spot_residuals(&sys, ctx(587.6), &[0.0, 1.0], &[0.0, 0.5], 6e-3);
         assert_eq!(res.len(), 2);
         assert!(res.iter().all(|v| v.is_finite()));
+    }
+}
+
+#[cfg(test)]
+mod distortion_focus_tests {
+    use super::*;
+    use tpt_optics_core::{Kelvin, Wavelength};
+    use tpt_optics_geometric::sequential::{Medium, SeqSurface, SequentialSystem, TraceContext};
+    use tpt_optics_geometric::surface::Asphere;
+
+    #[test]
+    fn distortion_is_small_when_the_lens_is_focused() {
+        // Distortion is measured against f·tanθ, which assumes the image plane
+        // sits at the focus. Place the image at the paraxial back focal length.
+        let ctx = TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        };
+        let mut sys = SequentialSystem::new();
+        sys.push(
+            SeqSurface::aspheric(Asphere::sphere(10.0), 12e-3),
+            5e-3,
+            Medium::Const(1.5168),
+        );
+        sys.push(
+            SeqSurface::aspheric(Asphere::sphere(-10.0), 40e-3),
+            40e-3,
+            Medium::Const(1.0),
+        );
+        sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
+        let bfl = sys.paraxial(ctx).back_focal_length().expect("BFL");
+        sys.thickness[1] = bfl;
+        let d = distortion(&sys, ctx, 2.0);
+        assert!(d.is_finite());
+        let efl = sys.paraxial(ctx).effective_focal_length();
+        assert!(
+            d.abs() < 0.05,
+            "focused distortion at 2°: {d}, bfl {bfl}, efl {efl:?}"
+        );
     }
 }

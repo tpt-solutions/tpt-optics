@@ -34,10 +34,10 @@ impl std::error::Error for ZmxError {}
 pub struct ZmxSurface {
     /// Surface name (may be empty).
     pub name: String,
-    /// Curvature (1/m).
+    /// Curvature (1/m). The file stores CURV in 1/mm (lens units).
     pub curvature: f64,
-    /// Even asphere terms following CURV (A1..A8, µm-based in Zemax but
-    /// stored here in meters-consistent 1/m^(2i−1) form).
+    /// Even asphere terms following CURV, stored in lens units (mm) as in
+    /// the file; [`to_sequential`] converts them to metres.
     pub asphere: [f64; 8],
     /// Conic constant.
     pub conic: f64,
@@ -105,7 +105,12 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                 }
             }
             "NAME" => {
-                doc.name = args.join(" ");
+                // Inside a SURF block the name belongs to that surface.
+                let name = args.join(" ");
+                match current.as_mut() {
+                    Some(c) => c.name = name,
+                    None => doc.name = name,
+                }
             }
             "SURF" => {
                 if let Some(s) = current.take() {
@@ -118,7 +123,8 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                     line: line_no,
                     message: "CURV before SURF".into(),
                 })?;
-                c.curvature = parse_f64(args.first(), line_no)?;
+                // CURV is in 1/mm; store 1/m.
+                c.curvature = parse_f64(args.first(), line_no)? * 1e3;
                 for (i, v) in args.iter().skip(1).take(8).enumerate() {
                     c.asphere[i] = parse_f64(Some(v), line_no)?;
                 }
@@ -178,11 +184,15 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
     Ok(doc)
 }
 
+/// Parse a finite number. `nan` and `inf` parse as `f64` but would feed
+/// non-finite curvature or thickness into the tracer, so they are rejected.
 fn parse_f64(v: Option<&&str>, line: usize) -> Result<f64, ZmxError> {
-    v.and_then(|s| s.parse::<f64>().ok()).ok_or(ZmxError {
-        line,
-        message: "expected a number".into(),
-    })
+    v.and_then(|s| s.parse::<f64>().ok())
+        .filter(|x| x.is_finite())
+        .ok_or(ZmxError {
+            line,
+            message: "expected a number".into(),
+        })
 }
 
 /// Serialize a document back to text form.
@@ -201,11 +211,12 @@ pub fn write(doc: &ZmxDocument) -> String {
         if s.stop {
             out.push_str("STOP\n");
         }
-        let _ = writeln!(
-            out,
-            "CURV {:.12} {:.12} 0 0 0 0 0 0 0\n",
-            s.curvature, s.asphere[0]
-        );
+        // CURV: curvature in 1/mm, then all eight asphere terms in lens units.
+        let mut curv = std::format!("CURV {:.12}", s.curvature / 1e3);
+        for a in &s.asphere {
+            let _ = write!(curv, " {a:.12}");
+        }
+        let _ = writeln!(out, "{curv}\n");
         let _ = writeln!(out, "CONI {:.12}\n", s.conic);
         if !s.glass.is_empty() {
             let _ = writeln!(out, "GLAS {} 0 0 0 0\n", s.glass);
@@ -221,6 +232,13 @@ pub fn write(doc: &ZmxDocument) -> String {
         let _ = writeln!(out, "DISZ {th}\n");
     }
     out
+}
+
+/// Factor converting the `i`-th (0-based) even-asphere coefficient from lens
+/// units to metres. A term `a·r^{2(i+1)}` with `z` and `r` in mm becomes
+/// `a·10^{6(i+1)−3}·r_m^{2(i+1)}` in metres, so the factor is `10^{6(i+1)−3}`.
+fn asphere_mm_to_m(i: usize) -> f64 {
+    10f64.powi(6 * (i as i32 + 1) - 3)
 }
 
 /// Convert a parsed document into a sequential system, resolving glasses
@@ -251,10 +269,15 @@ pub fn to_sequential(
             message: "document has no surfaces".into(),
         });
     }
+    // The medium the ray is travelling in, starting in object-space air.
+    let mut travelling = Medium::Const(1.0);
     for (i, s) in doc.surfaces.iter().enumerate().skip(1) {
         let is_last = i + 1 == doc.surfaces.len();
         let is_mirror = s.glass.to_ascii_uppercase().starts_with("MIRROR");
-        let medium_after = if is_last || s.glass.is_empty() || is_mirror {
+        let medium_after = if is_mirror {
+            // A mirror reflects: the ray stays in the medium it was in.
+            travelling.clone()
+        } else if is_last || s.glass.is_empty() {
             Medium::Const(1.0)
         } else if let Some(mat) = catalog.get(&s.glass) {
             Medium::Material(mat)
@@ -276,13 +299,10 @@ pub fn to_sequential(
         } else {
             SurfaceAction::Refract
         };
-        // Zemax even-asphere coefficients are in lens units (mm); convert
-        // a_i (mm^{1−2i}) to meters by scaling 1e-3 per order.
+        // Asphere terms are in lens units (mm); convert each to metres.
         let mut coeffs = [0.0; 8];
-        let mut scale = 1e-3_f64;
         for (ci, z) in s.asphere.iter().enumerate() {
-            coeffs[ci] = z * scale;
-            scale *= 1e-3;
+            coeffs[ci] = z * asphere_mm_to_m(ci);
         }
         let surface = SeqSurface {
             action,
@@ -299,6 +319,7 @@ pub fn to_sequential(
             phase: None,
         };
         let thickness = if is_last { 0.0 } else { s.thickness };
+        travelling = medium_after.clone();
         sys.push(surface, thickness, medium_after);
     }
     let _ = (wl, temperature);
@@ -310,6 +331,12 @@ pub fn to_sequential(
 /// their names.
 pub fn from_sequential(system: &SequentialSystem) -> ZmxDocument {
     let mut doc = ZmxDocument::default();
+    // Zemax files start with the object surface, which `to_sequential`
+    // skips; emit one so a round trip keeps every traced surface.
+    doc.surfaces.push(ZmxSurface {
+        thickness: f64::INFINITY,
+        ..ZmxSurface::default()
+    });
     let n = system.surfaces.len();
     for (i, s) in system.surfaces.iter().enumerate() {
         let mut z = ZmxSurface {
@@ -317,7 +344,9 @@ pub fn from_sequential(system: &SequentialSystem) -> ZmxDocument {
             conic: s.asphere.conic,
             ..ZmxSurface::default()
         };
-        z.asphere.copy_from_slice(&s.asphere.coeffs);
+        for (ci, a) in s.asphere.coeffs.iter().enumerate() {
+            z.asphere[ci] = a / asphere_mm_to_m(ci);
+        }
         z.semi_diameter = if s.semi_diameter.is_finite() {
             s.semi_diameter
         } else {
@@ -371,13 +400,13 @@ DISZ INFINITY
 SURF
 STOP
 DIAM 12.5
-CURV 10.0 0 0 0 0 0 0 0 0
+CURV 0.01 0 0 0 0 0 0 0 0
 GLAS N-BK7 0 0 0 0
 CONI 0.0
 DISZ 5.0
 SURF
 DIAM 12.0
-CURV -10.0 0 0 0 0 0 0 0 0
+CURV -0.01 0 0 0 0 0 0 0 0
 GLAS AIR
 DISZ 95.0
 SURF
@@ -482,10 +511,85 @@ DISZ 0
         )
         .unwrap();
         let doc2 = from_sequential(&sys);
-        // Structural fields survive (3 traced surfaces; the Zemax object
-        // surface is not reconstructed).
-        assert_eq!(doc2.surfaces.len(), 3);
-        assert!((doc2.surfaces[0].curvature - 10.0).abs() < 1e-15);
-        assert_eq!(doc2.surfaces[0].glass, "N-BK7");
+        // Object surface first, then the three traced surfaces.
+        assert_eq!(doc2.surfaces.len(), 4);
+        assert!(doc2.surfaces[0].thickness.is_infinite());
+        assert!((doc2.surfaces[1].curvature - 10.0).abs() < 1e-15);
+        assert_eq!(doc2.surfaces[1].glass, "N-BK7");
+        // Text round trip keeps every traced surface and its curvature.
+        let sys2 = to_sequential(
+            &parse(&write(&doc2)).unwrap(),
+            &catalog,
+            Wavelength::from_nm(587.6),
+            Kelvin::from_celsius(20.0),
+        )
+        .unwrap();
+        assert_eq!(sys2.surfaces.len(), sys.surfaces.len());
+        assert!((sys2.surfaces[0].asphere.curvature - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn curv_is_read_in_inverse_millimetres() {
+        // CURV 0.02 mm⁻¹ is R = 50 mm, i.e. 20 m⁻¹.
+        let doc = parse("MODE SEQ\nSURF\nCURV 0.02\n").unwrap();
+        assert!((doc.surfaces[0].curvature - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn asphere_factor_matches_mm_to_m_expansion() {
+        // z = a·r⁴ with z, r in mm: z_m = 1e-3·a·(1e3·r_m)⁴ ⇒ a_m = a·1e9.
+        assert_eq!(asphere_mm_to_m(0), 1e3);
+        assert_eq!(asphere_mm_to_m(1), 1e9);
+        let a_mm = 2.0e-6_f64;
+        let r_m = 1.0e-3_f64;
+        let z_m = 1e-3 * a_mm * (1e3 * r_m).powi(4);
+        let z_via_metres = a_mm * asphere_mm_to_m(1) * r_m.powi(4);
+        assert!(
+            (z_m - z_via_metres).abs() < 1e-18,
+            "{z_m} vs {z_via_metres}"
+        );
+    }
+
+    #[test]
+    fn surface_name_inside_surf_block() {
+        let doc = parse("MODE SEQ\nNAME lens\nSURF\nNAME front\nCURV 0\nSURF\n").unwrap();
+        assert_eq!(doc.name, "lens");
+        assert_eq!(doc.surfaces[0].name, "front");
+    }
+}
+
+#[cfg(test)]
+mod mirror_medium_tests {
+    use super::*;
+
+    #[test]
+    fn mirror_keeps_the_ray_in_its_medium() {
+        // Object air → BK7 lens surface → mirror (reflects inside glass)
+        // → image. The medium after the mirror must still be BK7.
+        let text = "MODE SEQ\nSURF\nDISZ INFINITY\nSURF\nGLAS N-BK7 0 0 0 0\nDISZ 5\nSURF\nGLAS MIRROR\nDISZ 5\nSURF\nDISZ 0\n";
+        let doc = parse(text).unwrap();
+        let catalog = crate::glass::reference_catalog();
+        let sys = to_sequential(
+            &doc,
+            &catalog,
+            Wavelength::from_nm(587.6),
+            Kelvin::from_celsius(20.0),
+        )
+        .unwrap();
+        assert!(matches!(&sys.media[1], Medium::Material(m) if m.name() == "N-BK7"));
+        assert!(matches!(&sys.media[2], Medium::Material(m) if m.name() == "N-BK7"));
+    }
+}
+
+#[cfg(test)]
+mod finite_number_tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_curvature_is_rejected() {
+        for bad in ["nan", "inf", "-inf", "1e999"] {
+            let text = std::format!("MODE SEQ\nSURF\nCURV {bad}\n");
+            assert!(parse(&text).is_err(), "accepted CURV {bad}");
+        }
     }
 }

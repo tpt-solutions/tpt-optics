@@ -72,8 +72,10 @@ pub fn fiber_lp_modes(
                     }
                 }
                 let u_root = 0.5 * (lo + hi);
-                // Reject roots pinned at the wall u ≈ V (w → 0, K diverges).
-                if v - u_root < 0.02 * v {
+                // Reject only a root pinned exactly at the wall u = V (w = 0),
+                // a spurious zero of the pole-free form. Modes just above
+                // cutoff have u slightly below V and must be kept.
+                if v - u_root <= 1e-9 * v {
                     continue;
                 }
                 let kn = k0 * n_core;
@@ -150,5 +152,21 @@ mod tests {
         for m in &modes {
             assert!(m.n_eff > 1.44 && m.n_eff < 1.456);
         }
+    }
+}
+
+#[cfg(test)]
+mod near_cutoff_tests {
+    use super::*;
+
+    #[test]
+    fn lp11_is_found_just_above_cutoff() {
+        // Choose λ so V = 2.41, just above the LP11 cutoff at 2.4048. The
+        // mode's u then sits within 1 % of V, which the old 2 % rule rejected.
+        let (a, n1, n2) = (5.0e-6, 1.4436, 1.44);
+        let na = sqrt(n1 * n1 - n2 * n2);
+        let lam = core::f64::consts::TAU * a * na / 2.41;
+        let modes = fiber_lp_modes(a, n1, n2, Wavelength::from_nm(lam * 1e9), 1);
+        assert!(modes.iter().any(|m| m.l == 1), "LP11 missing: {modes:?}");
     }
 }

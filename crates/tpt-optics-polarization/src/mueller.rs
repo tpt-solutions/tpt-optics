@@ -79,14 +79,16 @@ impl MuellerMatrix {
     /// Retarder of phase delay `delta` (rad) with fast axis at `theta` (rad).
     #[must_use]
     pub fn waveplate(delta: f64, theta: f64) -> Self {
-        // Canonical retarder (fast axis x).
+        // Canonical retarder (fast axis x). The (U, V) block is the Jones
+        // diag(1, e^{iδ}) mapped through the coherency bridge, so it must
+        // match `MuellerMatrix::from_jones` (checked in the bridge tests).
         let c = libm::cos(delta);
         let s = libm::sin(delta);
         let m = [
             1.0, 0.0, 0.0, 0.0, //
             0.0, 1.0, 0.0, 0.0, //
-            0.0, 0.0, c, s, //
-            0.0, 0.0, -s, c, //
+            0.0, 0.0, c, -s, //
+            0.0, 0.0, s, c, //
         ];
         MuellerMatrix::new(m).rotated(theta)
     }
@@ -108,11 +110,14 @@ impl MuellerMatrix {
     pub fn diattenuator(t_fast: f64, t_slow: f64, theta: f64) -> Self {
         let a = (t_fast + t_slow) / 2.0;
         let b = (t_fast - t_slow) / 2.0;
+        // The (U, V) block is the coherence term, scaled by the geometric
+        // mean of the amplitude transmissions: √(T_fast·T_slow).
+        let c = libm::sqrt(t_fast * t_slow);
         let m = [
             a, b, 0.0, 0.0, //
             b, a, 0.0, 0.0, //
-            0.0, 0.0, 0.0, 0.0, //
-            0.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, c, 0.0, //
+            0.0, 0.0, 0.0, c, //
         ];
         MuellerMatrix::new(m).rotated(theta)
     }
@@ -320,5 +325,59 @@ mod tests {
         let expect = StokesVector::linear(0.5, 1.0);
         assert!(close(a.s1, expect.s1, 1e-12));
         assert!(close(a.s2, expect.s2, 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod jones_bridge_tests {
+    use super::*;
+    use crate::jones::JonesMatrix;
+    use core::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+
+    fn assert_same(mueller: &MuellerMatrix, bridged: &MuellerMatrix, what: &str) {
+        for i in 0..16 {
+            assert!(
+                (mueller.m[i] - bridged.m[i]).abs() < 1e-12,
+                "{what}: element {i}: Mueller {} vs Jones-bridged {}",
+                mueller.m[i],
+                bridged.m[i]
+            );
+        }
+    }
+
+    #[test]
+    fn waveplates_agree_with_jones_at_arbitrary_angle() {
+        for &theta in &[0.0, 0.3, FRAC_PI_4, 1.1] {
+            for &delta in &[FRAC_PI_2, PI, 0.7] {
+                let bridged = MuellerMatrix::from_jones(&JonesMatrix::waveplate(delta, theta));
+                assert_same(
+                    &MuellerMatrix::waveplate(delta, theta),
+                    &bridged,
+                    "waveplate",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn polarizers_agree_with_jones_at_arbitrary_angle() {
+        for &theta in &[0.0, 0.3, FRAC_PI_4, 1.1] {
+            let bridged = MuellerMatrix::from_jones(&JonesMatrix::polarizer(theta));
+            assert_same(&MuellerMatrix::polarizer(theta), &bridged, "polarizer");
+        }
+    }
+
+    #[test]
+    fn diattenuators_agree_with_jones_at_arbitrary_angle() {
+        // Jones takes amplitude transmissions, Mueller takes intensities.
+        let (t_fast, t_slow) = (0.9, 0.4);
+        for &theta in &[0.0, 0.3, FRAC_PI_4] {
+            let jones = JonesMatrix::diattenuator(libm::sqrt(t_fast), libm::sqrt(t_slow), theta);
+            assert_same(
+                &MuellerMatrix::diattenuator(t_fast, t_slow, theta),
+                &MuellerMatrix::from_jones(&jones),
+                "diattenuator",
+            );
+        }
     }
 }

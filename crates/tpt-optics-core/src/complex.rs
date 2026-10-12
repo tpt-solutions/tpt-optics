@@ -82,12 +82,19 @@ impl<T: Scalar> Complex<T> {
         if self.re == T::ZERO && self.im == T::ZERO {
             return Self::zero();
         }
+        // Cancellation-free: take the part that adds (no subtraction), then
+        // recover the other from re·im. `m − re` alone loses the imaginary
+        // part when |im| ≪ |re|.
         let m = self.abs();
-        let re = ((m + self.re) * T::from_f64(0.5)).sqrt();
-        let im = ((m - self.re) * T::from_f64(0.5)).sqrt();
-        if self.im < T::ZERO {
-            Complex::new(re, -im)
+        let half = T::from_f64(0.5);
+        if self.re >= T::ZERO {
+            let re = ((m + self.re) * half).sqrt();
+            Complex::new(re, self.im / (T::from_f64(2.0) * re))
         } else {
+            let im_mag = ((m - self.re) * half).sqrt();
+            let im_abs = if self.im < T::ZERO { -self.im } else { self.im };
+            let re = im_abs / (T::from_f64(2.0) * im_mag);
+            let im = if self.im < T::ZERO { -im_mag } else { im_mag };
             Complex::new(re, im)
         }
     }
@@ -264,5 +271,34 @@ mod tests {
         let c = Complex::cis(2.0_f64.atan2(1.0)); // unit circle point
         assert!(close(c.abs(), 1.0));
         assert!(close(c.re, 1.0 / 5.0f64.sqrt()));
+    }
+}
+
+#[cfg(test)]
+mod sqrt_precision_tests {
+    use super::*;
+
+    #[test]
+    fn sqrt_keeps_small_imaginary_part() {
+        // (1 + 1e-12i)^(1/2) ≈ 1 + 5e-13i: the naive m − re form returns 0.
+        let z = Complex::<f64>::new(1.0, 1e-12);
+        let s = z.sqrt();
+        assert!((s.im - 5e-13).abs() < 1e-20, "im = {}", s.im);
+        let back = s * s;
+        assert!((back.im - z.im).abs() < 1e-20, "s² im = {}", back.im);
+    }
+
+    #[test]
+    fn sqrt_of_negative_real_squares_back() {
+        for z in [
+            Complex::<f64>::new(-4.0, 1e-12),
+            Complex::<f64>::new(-4.0, -1e-12),
+            Complex::<f64>::new(3.0, -2.0),
+        ] {
+            let s = z.sqrt();
+            assert!(s.re >= 0.0, "principal branch violated: {s:?}");
+            let back = s * s;
+            assert!((back.re - z.re).abs() < 1e-12 && (back.im - z.im).abs() < 1e-12);
+        }
     }
 }

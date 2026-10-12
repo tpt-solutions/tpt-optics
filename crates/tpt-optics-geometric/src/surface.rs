@@ -323,23 +323,24 @@ pub fn zernike_nm(j: u32) -> (u32, i32) {
 /// (i.e. powers n−2s for s = 0..=(n−m)/2).
 #[must_use]
 pub fn zernike_radial_coeffs(n: u32, m: u32) -> Vec<f64> {
-    let mm = m; // |m| — sign handled by cos/sin symmetry
-    let nm = n - mm;
-    let k_max = nm / 2;
-    // Factorials up to n.
-    let mut fact = [1.0f64; 21];
-    for i in 1..21 {
-        fact[i] = fact[i - 1] * i as f64;
+    // Undefined unless m ≤ n and n − m is even (R_n^m has no such term).
+    if m > n || (n - m) % 2 != 0 {
+        return Vec::new();
     }
+    // |m| — sign handled by cos/sin symmetry.
+    let k_max = (n - m) / 2;
     let mut coeffs = Vec::with_capacity(k_max as usize + 1);
     for s in 0..=k_max {
         let sign = if s % 2 == 0 { 1.0 } else { -1.0 };
-        let denom = fact[s as usize]
-            * fact[((n + mm) / 2 - s) as usize]
-            * fact[((n - mm) / 2 - s) as usize];
-        coeffs.push(sign * fact[(n - s) as usize] / denom);
+        let denom = factorial(s) * factorial((n + m) / 2 - s) * factorial((n - m) / 2 - s);
+        coeffs.push(sign * factorial(n - s) / denom);
     }
     coeffs
+}
+
+/// `k!` as `f64`, computed directly so there is no fixed table to overflow.
+fn factorial(k: u32) -> f64 {
+    (1..=k).fold(1.0, |acc, i| acc * i as f64)
 }
 
 /// Evaluate the standard normalized Zernike j (OSA/ANSI) at (ρ, θ).
@@ -574,5 +575,26 @@ mod tests {
         let hit = a.intersect(&ray, 1e-12).unwrap();
         let residual = hit.point.z - a.sag(hit.point.x, hit.point.y);
         assert!(residual.abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod zernike_range_tests {
+    use super::*;
+
+    #[test]
+    fn radial_polynomial_is_one_at_the_rim_for_high_order() {
+        // R_n^m(1) = 1 for every valid (n, m); n = 25 is beyond the old fixed
+        // factorial table (which panicked above 20).
+        for &(n, m) in &[(25u32, 3u32), (20, 0), (24, 6)] {
+            let sum: f64 = zernike_radial_coeffs(n, m).iter().sum();
+            assert!((sum - 1.0).abs() < 1e-6, "R_{n}^{m}(1) = {sum}");
+        }
+    }
+
+    #[test]
+    fn invalid_radial_order_is_empty_not_a_panic() {
+        assert!(zernike_radial_coeffs(2, 4).is_empty());
+        assert!(zernike_radial_coeffs(4, 1).is_empty());
     }
 }

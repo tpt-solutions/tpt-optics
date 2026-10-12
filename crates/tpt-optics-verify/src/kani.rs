@@ -67,12 +67,16 @@ mod proofs {
     }
 
     /// Proof 2: lossless Fresnel split conserves energy below TIR.
+    ///
+    /// Restricted to `n1 > n2`, the only case with a critical angle. For
+    /// `n1 ≤ n2` there is no TIR branch and the assertions would never run,
+    /// so that case is not claimed by this proof.
     #[kani::proof]
     fn lossless_split_conserves_energy() {
         let n1: f64 = kani::any();
         let n2: f64 = kani::any();
         kani::assume(n1 >= 1.0 && n1 <= 2.0);
-        kani::assume(n2 >= 1.0 && n2 <= 2.0);
+        kani::assume(n2 >= 1.0 && n2 < n1);
         let sin_t: f64 = kani::any();
         kani::assume(sin_t >= 0.0 && sin_t < 0.999);
         let theta = libm::asin(sin_t);

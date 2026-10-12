@@ -4,6 +4,16 @@ All notable changes to tpt-optics are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`tpt-optics-design`**: Zernike wavefront-error merit (`wavefront` module).
+  `wavefront_samples` traces a hexapolar pupil grid and references each ray's
+  OPD to a plane through the chief image point; `fit_zernike` least-squares
+  fits OSA/ANSI Zernike coefficients; `wavefront_rms` gives the residual RMS
+  error. Replaces the spot/OPD proxy as the wavefront merit.
+
 ## [0.1.0] — 2026-10-07
 
 Initial implementation of the full phased build (see `todo.md`).

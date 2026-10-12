@@ -91,7 +91,11 @@ where
     let mean = values.iter().sum::<f64>() / n;
     let var = values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n;
     let p90 = values[libm::round(0.9 * (values.len() as f64 - 1.0)) as usize];
-    let failures = values.iter().filter(|v| **v > pass_limit).count();
+    // A NaN merit (undefined or blocked trace) is a failure, not a pass.
+    let failures = values
+        .iter()
+        .filter(|v| v.is_nan() || **v > pass_limit)
+        .count();
     ToleranceStats {
         mean,
         sigma: libm::sqrt(var),
@@ -196,5 +200,17 @@ mod tests {
             stats.failure_fraction
         );
         assert!(stats.mean.abs() < 0.005);
+    }
+}
+
+#[cfg(test)]
+mod nan_tolerance_tests {
+    use super::*;
+
+    #[test]
+    fn nan_merit_counts_as_failure() {
+        // A merit that is undefined everywhere must fail every sample, not pass.
+        let stats = analyze(&[0.0], &[], None, &|_x: &[f64]| f64::NAN, 8, 1.0, 1);
+        assert_eq!(stats.failure_fraction, 1.0);
     }
 }

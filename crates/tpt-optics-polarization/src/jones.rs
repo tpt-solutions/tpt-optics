@@ -108,13 +108,14 @@ impl JonesMatrix {
         )
     }
 
-    /// Rotate the operator's axes by `theta` (rad):
-    /// `J(θ) = R(−θ)·J·R(θ)` where `R` is the field rotation.
+    /// Rotate the operator's axes by `theta` (rad): `J(θ) = R(θ)·J·R(−θ)`,
+    /// where `R` is the field rotation. An x-axis element becomes one with
+    /// its axis at +θ, matching [`JonesMatrix::polarizer`].
     #[must_use]
     pub fn rotated(&self, theta: f64) -> JonesMatrix {
         let r = rotation(theta);
         let r_inv = rotation(-theta);
-        r_inv.mul_matrix(&self.mul_matrix(&r))
+        r.mul_matrix(&self.mul_matrix(&r_inv))
     }
 
     /// Linear ideal polarizer with transmission axis at `theta` (rad).
@@ -277,5 +278,49 @@ mod tests {
         assert!(close(out_fast.intensity(), 1.0, 1e-15));
         let out_slow = JonesVector::linear_y().apply(&d);
         assert!(close(out_slow.intensity(), 0.25, 1e-15));
+    }
+}
+
+#[cfg(test)]
+mod rotation_convention_tests {
+    use super::*;
+    use core::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    #[test]
+    fn rotated_polarizer_transmits_along_plus_theta() {
+        // A polarizer with its axis at +θ must pass light polarized at +θ
+        // and block light at +θ + 90°.
+        let theta = 0.4;
+        let x_axis = JonesMatrix::new(
+            Complex::one(),
+            Complex::zero(),
+            Complex::zero(),
+            Complex::zero(),
+        );
+        let p = x_axis.rotated(theta);
+        let pass = JonesVector::linear_at(theta).apply(&p);
+        assert!(
+            (pass.intensity() - 1.0).abs() < 1e-12,
+            "T = {}",
+            pass.intensity()
+        );
+        let block = JonesVector::linear_at(theta + FRAC_PI_2).apply(&p);
+        assert!(block.intensity() < 1e-12);
+    }
+
+    #[test]
+    fn rotated_polarizer_matches_constructor() {
+        let theta = FRAC_PI_4 * 0.7;
+        let x_axis = JonesMatrix::new(
+            Complex::one(),
+            Complex::zero(),
+            Complex::zero(),
+            Complex::zero(),
+        );
+        let a = x_axis.rotated(theta);
+        let b = JonesMatrix::polarizer(theta);
+        for (u, v) in [(a.a, b.a), (a.b, b.b), (a.c, b.c), (a.d, b.d)] {
+            assert!((u - v).abs() < 1e-12, "rotated {u:?} vs polarizer {v:?}");
+        }
     }
 }

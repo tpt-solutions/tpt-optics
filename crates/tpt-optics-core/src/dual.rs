@@ -13,12 +13,20 @@ use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAss
 use crate::num::Scalar;
 
 /// A dual number `v + ε·d` with `ε² = 0`.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug)]
 pub struct Dual {
     /// Function value.
     pub v: f64,
     /// First derivative with respect to the seed variable.
     pub d: f64,
+}
+
+impl PartialEq for Dual {
+    /// Equal by value only, consistent with [`PartialOrd`]: a seeded zero
+    /// (`v = 0`, `d ≠ 0`) compares equal to a constant zero.
+    fn eq(&self, other: &Self) -> bool {
+        self.v == other.v
+    }
 }
 
 impl PartialOrd for Dual {
@@ -296,5 +304,22 @@ mod tests {
         // A constant shifted by the variable keeps the variable's slope.
         let y = Dual::var(1.5) + Dual::new(2.0);
         assert_eq!(y.d, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod equality_tests {
+    use super::*;
+
+    #[test]
+    fn seeded_zero_equals_constant_zero() {
+        // Equality must agree with the value-only ordering; a seeded zero
+        // (e.g. a differentiated flat surface's curvature) is still zero.
+        let seeded = Dual { v: 0.0, d: 1.0 };
+        assert_eq!(seeded, Dual::ZERO);
+        assert_eq!(
+            seeded.partial_cmp(&Dual::ZERO),
+            Some(core::cmp::Ordering::Equal)
+        );
     }
 }

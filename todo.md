@@ -6,7 +6,7 @@
 **Legend:** `[ ]` todo · `[~]` in progress · `[x]` done
 
 > **Status (2026-10-07):** all phases implemented. Gate: `just check`
-> (fmt · clippy `-D warnings` · 203 tests · `cargo deny` · `no_std` builds) — green.
+> (fmt · clippy `-D warnings` · 208 tests · `cargo deny` · `no_std` builds) — green.
 >
 > **Deviation from `spec.txt`:** the internal `tpt-*` sibling crates listed
 > below (`tpt-math`, `tpt-dsp`, `tpt-fem`, `tpt-materials`,
@@ -166,7 +166,7 @@
 - [x] Scaffold `Cargo.toml` + `lib.rs`
 - [x] Wire deps: `tpt-optics-core`, `tpt-optics-geometric` (+ in-workspace optimizers)
 - [x] Merit function: spot size (RMS spot over pupil fans)
-- [x] Merit function: wavefront error — *proxy*: OPD/RMS-spot-based merits (wavefront via `tpt-optics-wave` PSF tools); dedicated Zernike wavefront fit listed as open item
+- [x] Merit function: wavefront error — Zernike least-squares fit of pupil OPD (`tpt-optics-design::wavefront`: `fit_zernike`, `wavefront_rms`)
 - [x] Merit function: MTF (via `tpt-optics-wave` PSF/OTF)
 - [x] Merit function: distortion (chief-ray vs. f·tanθ)
 - [x] Merit function: chromatic aberration (focal shift across band)
@@ -275,6 +275,5 @@
 - [ ] Confirm `tpt-fem` crate name for mode-solving sub-crate; upgrade the scalar FEM to vectorial (spec's `tpt-fem-eigen`).
 - [ ] Decide `tpt-percept` stub interface once that crate's API stabilizes.
 - [ ] Photonic-crystal **defect modes** (supercell PWEM) and **graded-index / photonic-crystal fibers** — deferred; slab/fiber/EIM solvers cover the base cases.
-- [ ] Zernike wavefront-error fit as a first-class merit (currently spot/OPD-based proxies + wave-crate PSF tools).
 - [ ] Zemax binary `.zmx` and NSC-mode read/write; STEP/IGES via `tpt-io-standards`.
 - [ ] End-to-end test with a true **double-Gauss** reference file (current E2E uses a singlet sample authored in-repo).

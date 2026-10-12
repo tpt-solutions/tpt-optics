@@ -1,8 +1,8 @@
 //! Glass catalogs: Zemax AGF-style parsing and an embedded reference set.
 //!
 //! The AGF subset covers `NM` (name), `ED` (extended data), `CD`
-//! (Sellmeier B/C coefficient pairs), `TD` (thermal dn/dT) and `CC`
-//! (concatenation) lines. The embedded [`reference_catalog`] carries a
+//! (Sellmeier `K1 L1 K2 L2 K3 L3` on one line), `TD` (thermal dn/dT) and
+//! `CC` (concatenation) lines. The embedded [`reference_catalog`] carries a
 //! small set of well-known glasses for tests and examples — it is an
 //! *illustrative subset*, not a substitute for vendor catalogs.
 
@@ -10,7 +10,7 @@ use std::string::{String, ToString};
 use std::sync::Arc;
 use std::vec::Vec;
 
-use tpt_optics_core::dispersion::{Sellmeier, TablePoint, Tabulated};
+use tpt_optics_core::dispersion::Sellmeier;
 use tpt_optics_core::material::{Material, MaterialDatabase};
 use tpt_optics_core::units::REFERENCE_TEMPERATURE;
 
@@ -40,17 +40,15 @@ struct AgfGlass {
     c: [f64; 3],
     next_cd_slot: usize,
     dn_dtemp: f64,
-    table: Vec<(f64, f64)>, // (λ nm, n) tabulated fallback
 }
 
 /// Parse AGF text into a material database.
 ///
-/// Sellmeier `CD` lines carry B then C in µm; tabulated glasses use
-/// `CD 0`-style wavelength/n pairs captured here as a table.
+/// A `CD` line carries the Sellmeier coefficients `K1 L1 K2 L2 K3 L3` in
+/// that order, with `L` in µm².
 pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
     let mut db = MaterialDatabase::new();
     let mut current: Option<AgfGlass> = None;
-    let mut table_mode = false;
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx + 1;
         let line = raw.trim();
@@ -74,7 +72,6 @@ pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
                     finish_glass(&mut db, &g, line_no)?;
                 }
                 let name = args.first().copied().unwrap_or("unnamed").to_string();
-                table_mode = false;
                 current = Some(AgfGlass {
                     name,
                     ..AgfGlass::default()
@@ -89,10 +86,6 @@ pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
                     }
                 }
             }
-            "CC" => {
-                // Continuation lines: data already captured by CD above.
-                let _ = (&current, table_mode, &args);
-            }
             "CD" => {
                 let Some(g) = current.as_mut() else {
                     return Err(AgfError {
@@ -100,28 +93,12 @@ pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
                         message: "CD before NM".into(),
                     });
                 };
-                // `CD <flag> <data...>`: flag 1 = Sellmeier B/C pairs
-                // (µm), flag 0 = tabulated (λ µm, n) pairs.
+                // Sellmeier K1 L1 K2 L2 K3 L3: each (K, L) pair is one term.
                 let vals: Vec<f64> = args.iter().filter_map(|s| s.parse::<f64>().ok()).collect();
-                if vals.len() < 3 {
-                    continue;
-                }
-                if vals[0] > 0.0 {
-                    table_mode = false;
-                    let mut i = 1usize;
-                    while i + 1 < vals.len() && g.next_cd_slot < 3 {
-                        g.b[g.next_cd_slot] = vals[i];
-                        g.c[g.next_cd_slot] = vals[i + 1];
-                        g.next_cd_slot += 1;
-                        i += 2;
-                    }
-                } else {
-                    table_mode = true;
-                    let mut i = 1usize;
-                    while i + 1 < vals.len() {
-                        g.table.push((vals[i] * 1e3, vals[i + 1])); // µm → nm
-                        i += 2;
-                    }
+                for pair in vals.chunks_exact(2).take(3) {
+                    g.b[g.next_cd_slot] = pair[0];
+                    g.c[g.next_cd_slot] = pair[1];
+                    g.next_cd_slot += 1;
                 }
             }
             _ => {} // GC (comments), OD, etc. tolerated
@@ -144,22 +121,6 @@ fn finish_glass(db: &mut MaterialDatabase, g: &AgfGlass, line: usize) -> Result<
         Material::new(
             g.name.clone(),
             std::boxed::Box::new(Sellmeier::new(g.b, g.c)),
-            g.dn_dtemp,
-            REFERENCE_TEMPERATURE,
-        )
-    } else if !g.table.is_empty() {
-        let pts: Vec<TablePoint> = g
-            .table
-            .iter()
-            .map(|(nm, n)| TablePoint {
-                wavelength_m: nm * 1e-9,
-                n: *n,
-                k: 0.0,
-            })
-            .collect();
-        Material::new(
-            g.name.clone(),
-            std::boxed::Box::new(Tabulated::from_points(&pts)),
             g.dn_dtemp,
             REFERENCE_TEMPERATURE,
         )
@@ -227,15 +188,8 @@ mod tests {
 CC
 NM N-BK7 1 2 3.0 2.0 0.0 0.0 0
 ED 1.51680 64.17 0.0 0.0 0.0 3.0E-6 0.0 0
-CD 1 1.03961212 0.00600069867
-CD 1 0.231792344 0.0200179144
-CD 1 1.01046945 103.560653
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653
 TD 0.0 0.0 0.0 3.0e-6
-NM MYTAB 1 1 1 1 0 0 0
-ED 1.5 40 0 0 0 0 0 0
-CD 0 0.40 1.530
-CD 0 0.55 1.510
-CD 0 0.70 1.498
 ";
 
     #[test]
@@ -247,11 +201,15 @@ CD 0 0.70 1.498
     }
 
     #[test]
-    fn parses_tabulated_glass() {
+    fn bk7_single_line_cd_matches_published_indices() {
+        // Schott N-BK7: n_F (486.1 nm) = 1.52238, n_C (656.3 nm) = 1.51432.
         let db = parse_agf(SAMPLE_AGF).unwrap();
-        let t = db.get("MYTAB").expect("MYTAB");
-        let n = t.index_at(wl(550.0), Kelvin::from_celsius(20.0)).n;
-        assert!((n - 1.510).abs() < 5e-3, "n = {n}");
+        let bk7 = db.get("N-BK7").expect("N-BK7");
+        let t = Kelvin::from_celsius(20.0);
+        let nf = bk7.index_at(wl(486.1), t).n;
+        let nc = bk7.index_at(wl(656.3), t).n;
+        assert!((nf - 1.52238).abs() < 2e-4, "n_F = {nf}");
+        assert!((nc - 1.51432).abs() < 2e-4, "n_C = {nc}");
     }
 
     #[test]

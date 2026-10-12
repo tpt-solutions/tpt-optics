@@ -105,9 +105,10 @@ impl ComplexRefractiveIndex {
     /// Power reflectance at normal incidence from air/vacuum.
     #[inline]
     pub fn reflectance_normal(self) -> f64 {
-        let d = self.n - 1.0;
-        let r = d / (self.n + 1.0);
-        r * r
+        // |(ñ − 1)/(ñ + 1)|² with ñ = n + ik.
+        let num = (self.n - 1.0) * (self.n - 1.0) + self.k * self.k;
+        let den = (self.n + 1.0) * (self.n + 1.0) + self.k * self.k;
+        num / den
     }
 }
 
@@ -159,5 +160,17 @@ mod tests {
         // Normal-incidence reflectance of glass: ((1.5-1)/(1.5+1))^2 = 0.04
         assert!((ComplexRefractiveIndex::real(1.5).reflectance_normal() - 0.04).abs() < 1e-15);
         let _ = constants::SPEED_OF_LIGHT;
+    }
+}
+
+#[cfg(test)]
+mod reflectance_tests {
+    use super::*;
+
+    #[test]
+    fn metal_reflectance_includes_extinction() {
+        // ñ = 0.2 + 3.0i: R = ((n−1)² + k²)/((n+1)² + k²) = 9.64/10.44.
+        let r = ComplexRefractiveIndex::new(0.2, 3.0).reflectance_normal();
+        assert!((r - 9.64 / 10.44).abs() < 1e-12, "R = {r}");
     }
 }

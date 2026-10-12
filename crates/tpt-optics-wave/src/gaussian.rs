@@ -100,7 +100,8 @@ impl GaussianBeam {
 
     fn w0_equivalent(&self) -> f64 {
         let zr = self.rayleigh_range();
-        libm::sqrt(zr * self.wavelength.m() * self.index / core::f64::consts::PI)
+        // z_R = π·n·w0²/λ₀  ⇒  w0 = √(z_R·λ₀/(π·n)).
+        libm::sqrt(zr * self.wavelength.m() / (core::f64::consts::PI * self.index))
     }
 }
 
@@ -281,5 +282,24 @@ mod tests {
         let beam = GaussianBeam::at_waist(w0, wl, 1.0);
         let theta = wl.m() / (core::f64::consts::PI * w0);
         assert!((beam.divergence() - theta).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod divergence_in_medium_tests {
+    use super::*;
+
+    #[test]
+    fn divergence_matches_waist_in_medium() {
+        // θ = λ/(π·n·w0): the wavelength in the medium over π times the waist.
+        let (w0, n) = (1.0e-3, 1.5);
+        let wl = Wavelength::from_nm(632.8);
+        let beam = GaussianBeam::at_waist(w0, wl, n);
+        let expect = libm::atan(wl.m() / (core::f64::consts::PI * n * w0));
+        assert!(
+            (beam.divergence() - expect).abs() < 1e-12,
+            "divergence {} vs {expect}",
+            beam.divergence()
+        );
     }
 }

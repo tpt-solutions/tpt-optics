@@ -104,7 +104,9 @@ pub fn fresnel_sfft(
         .enumerate()
         .map(|(i, mut v)| {
             let x = (i as f64 - n as f64 / 2.0) * dx_out;
-            let scale = Complex::cis(k * z) / Complex::new(0.0, wavelength_m * z)
+            // 1-D Fresnel prefactor 1/√(iλz), with the sample weight dx.
+            let scale = Complex::cis(k * z - core::f64::consts::FRAC_PI_4)
+                * Complex::real(dx / libm::sqrt(wavelength_m * z))
                 * Complex::cis(k * x * x / (2.0 * z));
             v *= scale;
             v
@@ -139,9 +141,9 @@ pub fn fraunhofer(
             *v = -*v;
         }
         let x = (i as f64 - n as f64 / 2.0) * dx_far;
-        // (1/(iλz))·e^{ikz}·e^{ikx²/2z}·dx
-        let scale =
-            Complex::cis(k * z + k * x * x / (2.0 * z)) / Complex::new(0.0, wavelength_m * z);
+        // 1-D prefactor (1/√(iλz))·e^{ikz}·e^{ikx²/2z}, times the sample weight dx.
+        let scale = Complex::cis(k * z + k * x * x / (2.0 * z) - core::f64::consts::FRAC_PI_4)
+            * Complex::real(1.0 / libm::sqrt(wavelength_m * z));
         *v = *v * scale * Complex::real(dx);
     }
     d
@@ -382,5 +384,43 @@ mod tests {
     #[test]
     fn close_unused() {
         assert!(close(1.0, 1.0, 1e-9));
+    }
+}
+
+#[cfg(test)]
+mod energy_tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    fn gaussian_1d(n: usize, dx: f64, w: f64) -> Vec<Complex<f64>> {
+        (0..n)
+            .map(|i| {
+                let x = (i as f64 - n as f64 / 2.0) * dx;
+                Complex::real(libm::exp(-x * x / (2.0 * w * w)))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fraunhofer_1d_conserves_energy() {
+        // Parseval with the 1-D prefactor 1/√(iλz) and sample weight dx.
+        let (n, dx, wl, z) = (256usize, 10e-6, 0.5e-6, 0.5);
+        let u = gaussian_1d(n, dx, 100e-6);
+        let v = fraunhofer(&u, n, dx, wl, z);
+        let dx_far = wl * z / (n as f64 * dx);
+        let e_in: f64 = u.iter().map(|c| c.norm_sqr()).sum::<f64>() * dx;
+        let e_out: f64 = v.iter().map(|c| c.norm_sqr()).sum::<f64>() * dx_far;
+        assert!((e_out / e_in - 1.0).abs() < 1e-9, "ratio {}", e_out / e_in);
+    }
+
+    #[test]
+    fn fresnel_sfft_conserves_energy() {
+        let (n, dx, wl, z) = (256usize, 10e-6, 0.5e-6, 0.1);
+        let u = gaussian_1d(n, dx, 100e-6);
+        let v = fresnel_sfft(&u, n, dx, wl, z);
+        let dx_out = wl * z / (n as f64 * dx);
+        let e_in: f64 = u.iter().map(|c| c.norm_sqr()).sum::<f64>() * dx;
+        let e_out: f64 = v.iter().map(|c| c.norm_sqr()).sum::<f64>() * dx_out;
+        assert!((e_out / e_in - 1.0).abs() < 1e-9, "ratio {}", e_out / e_in);
     }
 }
