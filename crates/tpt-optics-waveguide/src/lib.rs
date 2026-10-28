@@ -7,6 +7,7 @@
 //! |---|---|
 //! | [`slab`] | symmetric slab TE/TM modes (exact transcendental solve) and planar-stack transfer matrices |
 //! | [`fiber`] | weak-guidance LP modes of a step-index fiber |
+//! | [`graded`] | weak-guidance LP modes of a power-law graded-index fiber |
 //! | [`eim`] | effective index method for channel waveguides |
 //! | [`coupled`] | coupled-mode theory: couplers, gratings, ring resonators |
 //! | [`phc`] | 1-D Bloch band structure and 2-D plane-wave expansion |
@@ -22,12 +23,15 @@
 extern crate alloc;
 
 pub mod coupled;
+pub mod eigen;
 pub mod devices;
 pub mod eim;
 pub mod fem;
 pub mod fiber;
+pub mod graded;
 pub mod phc;
 pub mod slab;
+pub mod supercell;
 
 pub mod prelude {
     //! Convenience re-export of the most-used waveguide types.
@@ -37,6 +41,8 @@ pub mod prelude {
     pub use crate::eim::channel_wguide_neff;
     pub use crate::fem::{fem_fundamental_mode, RectDomain};
     pub use crate::fiber::{fiber_lp_modes, LpMode};
+    pub use crate::graded::graded_lp_modes;
     pub use crate::phc::{bragg_stack_bands, pwem_te_bands};
     pub use crate::slab::{slab_modes, SlabLayer, SlabMode};
 }
+#[cfg(test)] mod scan_tmp;

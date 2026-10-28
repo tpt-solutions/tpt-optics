@@ -8,6 +8,18 @@ All notable changes to tpt-optics are documented here. Format follows
 
 ### Added
 
+- **`tpt-optics-waveguide`**: Graded-index fiber LP modes (`graded` module).
+  `graded_lp_modes` solves the scalar radial eigenproblem for a power-law core
+  profile by finite differences on a 200-cell grid truncated at 4a. Checked
+  against the parabolic 2-D oscillator ground state and the step-index limit.
+- **`tpt-optics-waveguide`**: Supercell plane-wave expansion for point
+  defects (`supercell` module). `point_defect_rods` builds an M×M supercell
+  with a defect rod at the centre; `supercell_te_freqs` solves the TE
+  eigenproblem at any Bloch vector; `bulk_gap_from_supercell` samples the
+  full supercell zone for the bulk gap. Checked against the exact
+  empty-lattice folding. Defect-mode frequencies are not yet quantitatively
+  converged (see module docs).
+
 - **`tpt-optics-design`**: Zernike wavefront-error merit (`wavefront` module).
   `wavefront_samples` traces a hexapolar pupil grid and references each ray's
   OPD to a plane through the chief image point; `fit_zernike` least-squares
