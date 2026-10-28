@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+keywords = ["xtask", "automation", "ci", "build-tools", "workspace"]
+categories = ["development-tools"]
+readme = "README.md"
 
 [dependencies]
 
