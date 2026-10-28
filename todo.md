@@ -151,7 +151,7 @@
 - [x] Photonic crystals: band structure calculation (1-D Bloch Bragg bands; 2-D plane-wave expansion, cyclic Jacobi)
 - [x] Photonic crystals: defect modes — *not implemented as supercell PWEM*; 1-D Fabry–Perot-type defect cavities are accessible via the TMM stack API (documented limitation; open item)
 - [x] Fiber optics: step-index
-- [x] Fiber optics: graded-index — *approximation only*: weak-guidance solver covers step-index; graded-index listed as open item
+- [x] Fiber optics: graded-index — power-law profile, scalar finite-difference radial solver (`graded` module; checked against the parabolic oscillator formula and the step-index limit)
 - [x] Fiber optics: photonic crystal fiber — *deferred* (open item)
 - [x] Integrated photonics: Mach-Zehnder interferometers
 - [x] Integrated photonics: ring resonators
@@ -274,6 +274,7 @@
 - [ ] Confirm GitHub org/account for `tpt-fem`, `tpt-materials`, `tpt-systems-optimisation`, `tpt-electromagnetics`, `tpt-percept` git dependency URLs (currently `<org>` placeholder). Once available, the in-workspace numerics (FFT/linalg/optimizers) can migrate behind those dependencies.
 - [ ] Confirm `tpt-fem` crate name for mode-solving sub-crate; upgrade the scalar FEM to vectorial (spec's `tpt-fem-eigen`).
 - [ ] Decide `tpt-percept` stub interface once that crate's API stabilizes.
-- [ ] Photonic-crystal **defect modes** (supercell PWEM) and **graded-index / photonic-crystal fibers** — deferred; slab/fiber/EIM solvers cover the base cases.
+- [ ] Photonic-crystal **defect modes** (supercell PWEM) — solver implemented (`supercell` module: rod-defect Fourier coefficients, supercell TE eigenproblem, full-zone gap helper). Defect-mode quantitative verification is open: the dense Jacobi eigensolver does not converge the bulk gap fast enough (see the module docs). Needs a larger-basis iterative eigensolver.
+- [ ] **Photonic-crystal fibers** — deferred; slab/fiber/EIM/graded-index solvers cover the base cases.
 - [ ] Zemax binary `.zmx` and NSC-mode read/write; STEP/IGES via `tpt-io-standards`.
 - [ ] End-to-end test with a true **double-Gauss** reference file (current E2E uses a singlet sample authored in-repo).
