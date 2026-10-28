@@ -9,9 +9,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-keywords.workspace = true
-categories.workspace = true
-readme.workspace = true
+keywords = ["waveguide", "photonics", "fiber-optics", "photonic-crystal", "mode-solver"]
+categories = ["science", "simulation", "mathematics", "no-std"]
+readme = "README.md"
 
 [features]
 default = []

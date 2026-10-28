@@ -9,9 +9,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-keywords.workspace = true
-categories.workspace = true
-readme.workspace = true
+keywords = ["ray-tracing", "optics", "lens-design", "abcd-matrix", "optical-design"]
+categories = ["science", "simulation", "no-std"]
+readme = "README.md"
 
 [features]
 default = []

@@ -9,9 +9,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-keywords.workspace = true
-categories.workspace = true
-readme.workspace = true
+keywords = ["zemax", "code-v", "glass-catalog", "optics", "lens-design"]
+categories = ["science", "parser-implementations", "encoding"]
+readme = "README.md"
 
 [features]
 std = []

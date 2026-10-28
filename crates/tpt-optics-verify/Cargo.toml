@@ -9,9 +9,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-keywords.workspace = true
-categories.workspace = true
-readme.workspace = true
+keywords = ["proptest", "kani", "formal-verification", "property-testing", "optics"]
+categories = ["development-tools::testing", "science", "no-std"]
+readme = "README.md"
 
 [dependencies]
 tpt-optics-core = { workspace = true }

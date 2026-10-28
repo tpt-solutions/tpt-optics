@@ -9,9 +9,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-keywords.workspace = true
-categories.workspace = true
-readme.workspace = true
+keywords = ["optics", "photonics", "raytracing", "physics", "simulation"]
+categories = ["science", "simulation", "mathematics", "no-std"]
+readme = "README.md"
 
 [features]
 default = ["core", "geometric"]
