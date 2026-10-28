@@ -2,13 +2,15 @@
 
 Thank you for considering a contribution!
 
+**Contributions are accepted as issues only.** Please open an issue to report
+bugs, request features, or discuss changes. Pull requests are not accepted.
+
 ## Ground rules
 
-- **Licensing.** The project is MIT OR Apache-2.0 (dual). By contributing you
-  agree your work is released under both licenses. New dependencies must be
+- **Licensing.** The project is MIT OR Apache-2.0 (dual). Issue reports and
+  suggestions are released under the same terms. New dependencies must be
   MIT-only or MIT/Apache-2.0 dual; crates whose *only* license is Apache-2.0
-  are rejected by `deny.toml`. If your change adds a dependency, run
-  `cargo deny check licenses sources` and make sure it passes.
+  are rejected by `deny.toml`.
 - **No external optical solvers.** All optical algorithms (ray-surface
   intersections, diffraction integrals, mode solvers, optimizers) are
   implemented from scratch. No C/C++ FFI, no Zemax/CODE V/RSoft/Lumerical
@@ -21,7 +23,7 @@ Thank you for considering a contribution!
 
 ## The gate
 
-Every PR must pass the full gate (same as CI):
+The maintainers run the full gate (same as CI) on every change:
 
 ```sh
 just check
@@ -44,11 +46,6 @@ which runs:
   `crates/tpt-optics-verify` for the existing strategies; add yours there.
 - State the accuracy/robustness limits of your method in the rustdoc (paraxial
   vs. exact, weak guidance vs. vectorial, sampling requirements, etc.).
-
-## Commit style
-
-Small, focused commits; imperative subject line (`Add Fresnel TIR phase`),
-body explaining *why* when it is not obvious.
 
 ## Reporting issues
 
