@@ -1,0 +1,41 @@
+# Biconvex N-BK7 singlet with a 100 mm focal length target.
+# Try:  cargo run -p tpt-optics-cli -- analyze crates/tpt-optics-cli/examples/singlet.toml
+#       cargo run -p tpt-optics-cli -- optimize crates/tpt-optics-cli/examples/singlet.toml
+name = "singlet"
+stop = 0
+fields_deg = [0.0, 2.0]
+heights_mm = [-5.0, -2.5, 0.0, 2.5, 5.0]
+
+[context]
+wavelength_nm = 587.6
+temperature_c = 20.0
+
+[[surfaces]]
+radius_mm = 120.0
+semi_diameter_mm = 12.5
+thickness_mm = 5.0
+glass = "N-BK7"
+
+[[surfaces]]
+radius_mm = -120.0
+semi_diameter_mm = 12.5
+thickness_mm = 95.0
+
+[[surfaces]]
+radius_mm = 0.0
+semi_diameter_mm = 12.5
+thickness_mm = 0.0
+
+[[operands]]
+kind = "efl"
+target = 100.0
+
+[[operands]]
+kind = "edge_thickness"
+index = 0
+min_mm = 2.0
+max_mm = 10.0
+
+[optimize]
+variables = [0, 1]
+iterations = 60

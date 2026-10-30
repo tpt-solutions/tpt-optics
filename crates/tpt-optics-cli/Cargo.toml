@@ -1,0 +1,27 @@
+[package]
+name = "tpt-optics-cli"
+description = "Command-line tool for tpt-optics: analyse, optimise and convert lens designs, and serve tools over JSON-RPC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "tpt-optics"
+path = "src/main.rs"
+
+[dependencies]
+tpt-optics = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+schemars = { workspace = true }
+
+[lints]
+workspace = true
