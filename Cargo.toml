@@ -1,5 +1,9 @@
 [workspace]
 resolver = "2"
+# Excluded: pyo3's build dependency target-lexicon is Apache-2.0 WITH
+# LLVM-exception, which the licence policy rejects. Build the Python bindings
+# from their own directory (see crates/tpt-optics-py/README.md).
+exclude = ["crates/tpt-optics-py"]
 members = [
     "crates/tpt-optics-core",
     "crates/tpt-optics-geometric",
@@ -29,7 +33,14 @@ readme = "README.md"
 [workspace.dependencies]
 # External dependencies (license policy: MIT-only or MIT/Apache-2.0 dual only).
 libm = "0.2"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+schemars = { version = "0.8", features = ["derive"] }
+wasm-bindgen = "0.2"
 proptest = "1"
+criterion = { version = "0.5", default-features = false }
 
 # Internal crates.
 tpt-optics-core = { path = "crates/tpt-optics-core", version = "0.1.0" }

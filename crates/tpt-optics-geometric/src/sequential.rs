@@ -348,6 +348,22 @@ pub enum ParamId {
     Thickness(usize),
 }
 
+/// Why a trace stopped early.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BlockReason {
+    /// The ray did not intersect the surface (its curvature cannot reach the
+    /// ray height).
+    Miss {
+        /// Index of the surface.
+        surface: usize,
+    },
+    /// The ray hit the surface outside its clear semi-diameter.
+    Aperture {
+        /// Index of the surface.
+        surface: usize,
+    },
+}
+
 /// Outcome of a sequential trace.
 #[derive(Clone, Debug)]
 pub struct TraceResult<T: Scalar> {
@@ -360,6 +376,12 @@ pub struct TraceResult<T: Scalar> {
     pub exit_direction: Vec3<T>,
     /// True when the ray was blocked by an aperture before the last surface.
     pub blocked: bool,
+    /// Why the ray was blocked. `None` when `blocked` is false.
+    pub block_reason: Option<BlockReason>,
+    /// Number of surfaces at which the ray was totally internally reflected.
+    /// A reflected ray is not blocked, so this can be non-zero with `blocked`
+    /// false.
+    pub total_internal_reflections: usize,
 }
 
 /// A sequential optical system.
@@ -444,6 +466,8 @@ impl SequentialSystem {
             ray.direction.normalized().unwrap_or(ray.direction),
         );
         let mut blocked = false;
+        let mut block_reason = None;
+        let mut tir_count = 0usize;
         let mut exit_dir = current.direction;
 
         for i in 0..n_surfaces {
@@ -463,6 +487,7 @@ impl SequentialSystem {
                 T::from_f64(1e-9),
             ) else {
                 blocked = true;
+                block_reason = Some(BlockReason::Miss { surface: i });
                 break;
             };
             let point_global = hit_point + Vec3::new(T::ZERO, T::ZERO, z_i);
@@ -470,6 +495,7 @@ impl SequentialSystem {
             let r2 = T::to_f64(hit_point.x * hit_point.x + hit_point.y * hit_point.y);
             if r2 > surf.semi_diameter * surf.semi_diameter {
                 blocked = true;
+                block_reason = Some(BlockReason::Aperture { surface: i });
                 break;
             }
             // Optical path: n·|t·d| (direction is unit).
@@ -483,6 +509,7 @@ impl SequentialSystem {
                     if let Some(t) = snell::refract(d, hit_normal, n_cur, n_next) {
                         t
                     } else {
+                        tir_count += 1;
                         let mirrored = snell::reflect(d, hit_normal);
                         points.push(point_global);
                         exit_dir = mirrored;
@@ -529,6 +556,8 @@ impl SequentialSystem {
             opd,
             exit_direction: exit_dir,
             blocked,
+            block_reason,
+            total_internal_reflections: tir_count,
         }
     }
 
@@ -667,7 +696,10 @@ impl ParaxialSystem {
     ///
     /// Traces a unit-height parallel ray and scales it so it just clears
     /// the stop.
-    pub fn entrance_pupil(&self, stop_index: usize) -> Option<(f64, f64)> {
+    ///
+    /// Returns `(semi_diameter, f_number)`. The F/# is `None` for an afocal
+    /// system, which has no focal length to divide by.
+    pub fn entrance_pupil(&self, stop_index: usize) -> Option<(f64, Option<f64>)> {
         let states = self.trace_ray(1.0, 0.0);
         let (y_stop, _) = states.get(stop_index)?;
         if y_stop.abs() < 1e-14 {
@@ -677,7 +709,7 @@ impl ParaxialSystem {
         // `epd` is a semi-diameter, so the diameter (and the F/#
         // denominator) is 2·epd.
         let fnum = self.effective_focal_length().map(|f| f / (2.0 * epd));
-        Some((epd, fnum.unwrap_or(f64::NAN)))
+        Some((epd, fnum))
     }
 }
 
@@ -927,9 +959,87 @@ mod seed_and_fnum_tests {
         sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
         let px = sys.paraxial(TraceContext::default());
         let (epd, fnum) = px.entrance_pupil(0).expect("stop at surface 0");
+        let fnum = fnum.expect("focal system has an F/#");
         let efl = px.effective_focal_length().unwrap();
         assert!((epd - 12e-3).abs() < 1e-12, "semi-diameter {epd}");
         assert!((fnum - efl / (2.0 * epd)).abs() < 1e-9, "F/# {fnum}");
+    }
+
+    #[test]
+    fn afocal_system_has_no_f_number() {
+        // Two flat surfaces in air have no focal length. The F/# used to be NaN.
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::flat(12e-3), 5e-3, Medium::Const(1.0));
+        sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
+        let (epd, fnum) = sys
+            .paraxial(TraceContext::default())
+            .entrance_pupil(0)
+            .expect("stop at surface 0");
+        assert!(epd.is_finite());
+        assert_eq!(fnum, None);
+    }
+}
+
+#[cfg(test)]
+mod block_reason_tests {
+    use super::*;
+
+    fn ctx() -> TraceContext {
+        TraceContext::default()
+    }
+
+    #[test]
+    fn a_ray_that_misses_a_small_sphere_is_a_miss() {
+        // R = 1 mm sphere, ray at 5 mm height: no intersection.
+        let mut sys = SequentialSystem::new();
+        sys.push(
+            SeqSurface::aspheric(Asphere::sphere(1000.0), 12e-3),
+            0.0,
+            Medium::Vacuum,
+        );
+        let ray = Ray::new(Vec3::new(5e-3, 0.0, -1e-3), Vec3::new(0.0, 0.0, 1.0));
+        let res = sys.trace(&ray, ctx());
+        assert!(res.blocked);
+        assert_eq!(res.block_reason, Some(BlockReason::Miss { surface: 0 }));
+    }
+
+    #[test]
+    fn a_ray_outside_the_clear_aperture_is_an_aperture_block() {
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::flat(1e-3), 0.0, Medium::Vacuum);
+        let ray = Ray::new(Vec3::new(5e-3, 0.0, -1e-3), Vec3::new(0.0, 0.0, 1.0));
+        let res = sys.trace(&ray, ctx());
+        assert!(res.blocked);
+        assert_eq!(res.block_reason, Some(BlockReason::Aperture { surface: 0 }));
+    }
+
+    #[test]
+    fn a_clear_ray_has_no_block_reason() {
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
+        let ray = Ray::new(Vec3::new(1e-3, 0.0, -1e-3), Vec3::new(0.0, 0.0, 1.0));
+        let res = sys.trace(&ray, ctx());
+        assert!(!res.blocked);
+        assert_eq!(res.block_reason, None);
+        assert_eq!(res.total_internal_reflections, 0);
+    }
+
+    #[test]
+    fn total_internal_reflection_is_counted_but_does_not_block() {
+        // A ray at 50° inside glass (n = 1.5) meets the flat glass–air surface
+        // beyond the critical angle (41.8°).
+        let mut sys = SequentialSystem::new();
+        sys.media[0] = Medium::Const(1.5);
+        sys.push(SeqSurface::flat(20e-3), 0.0, Medium::Vacuum);
+        let theta = 50f64.to_radians();
+        let ray = Ray::new(
+            Vec3::new(0.0, 0.0, -1e-3),
+            Vec3::new(theta.sin(), 0.0, theta.cos()),
+        );
+        let res = sys.trace(&ray, ctx());
+        assert!(!res.blocked);
+        assert_eq!(res.block_reason, None);
+        assert_eq!(res.total_internal_reflections, 1);
     }
 }
 

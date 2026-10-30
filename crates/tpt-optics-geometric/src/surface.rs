@@ -153,7 +153,7 @@ impl Sphere {
     }
 
     /// Construct from radius of curvature.
-    pub const fn from_radius(radius: f64) -> Self {
+    pub fn from_radius(radius: f64) -> Self {
         Sphere {
             curvature: if radius == 0.0 { 0.0 } else { 1.0 / radius },
         }

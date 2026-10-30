@@ -29,9 +29,11 @@
 extern crate alloc;
 
 pub mod abcd;
+pub mod builder;
 pub mod differentiable;
 pub mod frame;
 pub mod nseq;
+pub mod presets;
 pub mod ray;
 pub mod sequential;
 pub mod snell;
@@ -41,12 +43,19 @@ pub mod prelude {
     //! Convenience re-export of the most-used geometric types.
 
     pub use crate::abcd::{free_space, mirror, refracting_surface, thin_lens};
+    pub use crate::builder::{BuildError, SystemBuilder};
     pub use crate::nseq::{NsObject, NsScene, ScatterModel};
     pub use crate::ray::Ray;
     pub use crate::sequential::{
-        ParamId, ParaxialSystem, SeqSurface, SequentialSystem, SurfaceAction, TraceContext,
-        TunedParams,
+        BlockReason, ParamId, ParaxialSystem, SeqSurface, SequentialSystem, SurfaceAction,
+        TraceContext, TunedParams,
     };
     pub use crate::snell::{diffract, reflect, refract};
     pub use crate::surface::{Asphere, OpticalSurface, Plane, Sphere, Zernike};
 }
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

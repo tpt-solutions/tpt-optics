@@ -372,7 +372,7 @@ fn scatter_direction(
         }
         ScatterModel::HenyeyGreenstein { g } => {
             let u = rng.next_f64();
-            let cos_theta = if g.abs() < 1e-9 {
+            let cos_theta = if libm::fabs(g) < 1e-9 {
                 1.0 - 2.0 * u
             } else {
                 let q = (1.0 - g * g) / (1.0 - g + 2.0 * g * u);
@@ -389,7 +389,7 @@ fn scatter_direction(
 
 /// Any orthonormal pair spanning the tangent plane of `n`.
 fn tangent_basis(n: Vec3<f64>) -> (Vec3<f64>, Vec3<f64>) {
-    let helper = if n.z.abs() < 0.9 {
+    let helper = if libm::fabs(n.z) < 0.9 {
         Vec3::new(0.0, 0.0, 1.0)
     } else {
         Vec3::new(1.0, 0.0, 0.0)

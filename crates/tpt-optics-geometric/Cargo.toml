@@ -23,7 +23,12 @@ tpt-optics-core = { workspace = true }
 libm = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "trace"
+harness = false
