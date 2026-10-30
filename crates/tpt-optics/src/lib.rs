@@ -35,6 +35,11 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+extern crate alloc;
+
+pub mod error;
+pub use error::{Error, ErrorKind};
+
 #[cfg(feature = "core")]
 pub use tpt_optics_core as core;
 
@@ -61,10 +66,23 @@ pub use tpt_optics_verify as verify;
 
 /// Re-export of the most-used types across the enabled features.
 pub mod prelude {
+    #[cfg(feature = "geometric")]
+    pub use crate::error::{Error, ErrorKind};
     #[cfg(feature = "core")]
     pub use tpt_optics_core::prelude::*;
+    #[cfg(feature = "design")]
+    pub use tpt_optics_design::{
+        analysis::analyze,
+        check::self_check,
+        glassmap::rank_achromats,
+        operands::{optimize_system, Operand},
+        params::ParamSet,
+        sweep::{grid, latin_hypercube, sobol},
+    };
     #[cfg(feature = "geometric")]
     pub use tpt_optics_geometric::prelude::*;
+    #[cfg(feature = "io")]
+    pub use tpt_optics_io::{glass::reference_catalog, seq, zmx};
     #[cfg(feature = "polarization")]
     pub use tpt_optics_polarization::prelude::*;
     #[cfg(feature = "wave")]
@@ -72,3 +90,13 @@ pub mod prelude {
     #[cfg(feature = "waveguide")]
     pub use tpt_optics_waveguide::prelude::*;
 }
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct CrateReadmeExamples;
+
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+struct WorkspaceReadmeExamples;

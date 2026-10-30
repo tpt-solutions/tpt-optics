@@ -46,3 +46,43 @@ tpt-optics-verify = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "01_glass_index"
+required-features = ["full"]
+
+[[example]]
+name = "02_singlet_focal_length"
+required-features = ["full"]
+
+[[example]]
+name = "03_lens_spot_diagram"
+required-features = ["full"]
+
+[[example]]
+name = "04_gaussian_beam_lens"
+required-features = ["full"]
+
+[[example]]
+name = "05_slab_fiber_modes"
+required-features = ["full"]
+
+[[example]]
+name = "06_jones_chain"
+required-features = ["full"]
+
+[[example]]
+name = "07_import_zmx_optimize_export"
+required-features = ["full"]
+
+[[example]]
+name = "08_differentiable_gradient"
+required-features = ["full"]
+
+[[example]]
+name = "09_photonic_crystal_gap"
+required-features = ["full"]
+
+[[example]]
+name = "10_tolerance_monte_carlo"
+required-features = ["full"]
