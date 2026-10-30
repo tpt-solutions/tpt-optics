@@ -23,11 +23,91 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test with the parallel feature
+        run: cargo test -p tpt-optics-design --features parallel
       - name: no_std compatibility
         run: |
           cargo build -p tpt-optics-core --no-default-features
           cargo build -p tpt-optics-geometric --no-default-features
           cargo build -p tpt-optics-polarization --no-default-features
+
+  test-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+
+  no-std-embedded:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Bare-metal build (no std)
+        run: |
+          for crate in tpt-optics-core tpt-optics-geometric tpt-optics-polarization \
+                       tpt-optics-wave tpt-optics-waveguide tpt-optics-design; do
+            cargo build -p "$crate" --no-default-features --target thumbv7em-none-eabi
+          done
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81
+      - uses: Swatinem/rust-cache@v2
+      - name: Build on the minimum supported Rust version
+        run: cargo build --workspace
+
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run every example
+        run: |
+          cargo run --release -p tpt-optics --example 01_glass_index --features full
+          cargo run --release -p tpt-optics --example 02_singlet_focal_length --features full
+          cargo run --release -p tpt-optics --example 03_lens_spot_diagram --features full
+          cargo run --release -p tpt-optics --example 04_gaussian_beam_lens --features full
+          cargo run --release -p tpt-optics --example 05_slab_fiber_modes --features full
+          cargo run --release -p tpt-optics --example 06_jones_chain --features full
+          cargo run --release -p tpt-optics --example 07_import_zmx_optimize_export --features full
+          cargo run --release -p tpt-optics --example 08_differentiable_gradient --features full
+          cargo run --release -p tpt-optics --example 09_photonic_crystal_gap --features full
+          cargo run --release -p tpt-optics --example 10_tolerance_monte_carlo --features full
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the WebAssembly bindings
+        run: cargo build -p tpt-optics-wasm --target wasm32-unknown-unknown
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the Python extension (standalone crate)
+        run: cargo build --manifest-path crates/tpt-optics-py/Cargo.toml --features extension-module
 
   deny:
     runs-on: ubuntu-latest
