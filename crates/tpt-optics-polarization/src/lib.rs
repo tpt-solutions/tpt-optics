@@ -26,3 +26,9 @@ pub mod prelude {
     pub use crate::ray_trace::{PolarizedElement, PolarizedSystem};
     pub use crate::stokes::StokesVector;
 }
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

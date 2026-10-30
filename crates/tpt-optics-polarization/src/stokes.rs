@@ -39,7 +39,7 @@ impl StokesVector {
     /// Fully circular polarization: `sign > 0` right (`E_y = −i·E_x`), `sign < 0`
     /// left. Matches [`StokesVector::from_jones`] of the same Jones state.
     pub fn circular(sign: f64, i: f64) -> Self {
-        StokesVector::new(i, 0.0, 0.0, -i * sign.signum())
+        StokesVector::new(i, 0.0, 0.0, -i * tpt_optics_core::num::sign(sign))
     }
 
     /// Jones vector → Stokes (deterministic, fully polarized).
