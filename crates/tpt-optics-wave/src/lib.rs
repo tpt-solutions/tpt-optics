@@ -37,3 +37,9 @@ pub mod prelude {
     pub use crate::fourier::{lens_fourier_transform, mtf_from_psf, psf_from_pupil};
     pub use crate::gaussian::{mode_match_thin_lens, rayleigh_range, GaussianBeam};
 }
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

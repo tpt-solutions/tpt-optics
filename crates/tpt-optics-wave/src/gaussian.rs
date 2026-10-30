@@ -55,14 +55,16 @@ impl GaussianBeam {
     #[must_use]
     pub fn w(&self) -> f64 {
         let inv = self.q.inv();
-        libm::sqrt((self.wavelength.m() / self.index) / ((-inv.im).abs() * core::f64::consts::PI))
+        libm::sqrt(
+            (self.wavelength.m() / self.index) / (libm::fabs(-inv.im) * core::f64::consts::PI),
+        )
     }
 
     /// Wavefront curvature radius at this plane (None at a waist).
     #[must_use]
     pub fn r(&self) -> Option<f64> {
         let inv = self.q.inv();
-        if inv.re.abs() < 1e-15 {
+        if libm::fabs(inv.re) < 1e-15 {
             None
         } else {
             Some(1.0 / inv.re)
@@ -146,11 +148,16 @@ pub fn mode_match_thin_lens(
     for k in 1..N_SCAN {
         let f = libm::exp(log_min + log_step * k as f64);
         let v = objective(f);
-        if v.is_finite() && v_prev.is_finite() && v.signum() != v_prev.signum() {
+        if v.is_finite()
+            && v_prev.is_finite()
+            && tpt_optics_core::num::sign(v) != tpt_optics_core::num::sign(v_prev)
+        {
             let (mut a, mut b) = (f_prev, f);
             for _ in 0..80 {
                 let mid = 0.5 * (a + b);
-                if objective(mid).signum() == objective(a).signum() {
+                if tpt_optics_core::num::sign(objective(mid))
+                    == tpt_optics_core::num::sign(objective(a))
+                {
                     a = mid;
                 } else {
                     b = mid;

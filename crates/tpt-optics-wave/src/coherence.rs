@@ -63,7 +63,7 @@ pub fn vcz_separation(k: usize, n: usize, source_dx: f64, wavelength_m: f64, z: 
 #[must_use]
 pub fn disk_source_mu(delta_x: f64, diameter: f64, wavelength_m: f64, z: f64) -> f64 {
     let arg = core::f64::consts::PI * diameter * delta_x / (wavelength_m * z);
-    if arg.abs() < 1e-9 {
+    if libm::fabs(arg) < 1e-9 {
         return 1.0;
     }
     2.0 * bessel_j(1, arg) / arg
