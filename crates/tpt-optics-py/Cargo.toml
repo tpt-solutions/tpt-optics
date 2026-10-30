@@ -1,0 +1,26 @@
+[package]
+name = "tpt-optics-py"
+description = "Python bindings (PyO3) for tpt-optics"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Standalone: this crate is excluded from the workspace (see the root Cargo.toml).
+[workspace]
+
+[lib]
+# The Python module is named `tpt_optics` (see the pymodule attribute); the
+# library itself has a different name so it does not clash with the dependency.
+name = "tpt_optics_py"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Build as a Python extension module (no libpython link), for maturin and
+# for importing from an interpreter.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+tpt-optics = { path = "../tpt-optics", features = ["geometric", "io", "design"] }
+pyo3 = "0.22"
