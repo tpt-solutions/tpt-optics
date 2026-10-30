@@ -20,13 +20,20 @@
 //! Defect states appear as supercell bands that have no counterpart in the
 //! bulk spectrum at the same `k`.
 //!
-//! Accuracy limits:
-//! - Plane-wave truncation (`n_g` per axis). A supercell of size `M` has
-//!   reciprocal spacing `2π/M`, so it needs about `M` times more plane waves
-//!   per axis than the bulk solver to reach the same `G` range.
+//! Convergence (checked for ε = 8.9, r/a = 0.2, M = 5):
+//! - TM: the bulk Γ/X/M levels agree to ~1e-3 at `n_g = 13`. The full-zone gap
+//!   is (0.324, 0.447) c/a at `n_g = 17–21`. A missing-rod defect gives a
+//!   level at 0.393 c/a, converged to ~0.3% for `n_g = 17–29`, and its
+//!   dispersion across the supercell zone is ~0.004 c/a.
+//! - TE: the 1/ε formulation converges slowly at high contrast. The bulk gap
+//!   moved by more than its own width between cutoffs, so TE defect levels are
+//!   not quantitative.
+//! - High-permittivity defects (ε = 40) are not converged at `n_g ≤ 29`.
+//!   Their levels move by several hundredths between cutoffs.
 //! - The supercell is periodic, so defects interact with their images at
-//!   distance `M·a`. Use `M ≥ 5` when the defect band must be isolated from
-//!   its images.
+//!   distance `M·a`. For the missing-rod level, the 7×7 cell gives 0.3996 c/a
+//!   at `n_g = 21` against 0.3943 for the 5×5 cell, a 1.3% shift. Quote the
+//!   isolated-defect level as 0.39–0.40 c/a until larger cells are converged.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -107,7 +114,10 @@ impl FourierTable {
             for dy in -d_max..=d_max {
                 let idx = ((dx + d_max) as usize) * span + (dy + d_max) as usize;
                 values[idx] = if dx == 0 && dy == 0 {
-                    let total: f64 = rods.iter().map(|rod| weight(rod) * PI * rod.radius * rod.radius).sum();
+                    let total: f64 = rods
+                        .iter()
+                        .map(|rod| weight(rod) * PI * rod.radius * rod.radius)
+                        .sum();
                     base + total / (mf * mf)
                 } else {
                     let g = TAU * sqrt((dx * dx + dy * dy) as f64) / mf;
@@ -126,7 +136,11 @@ impl FourierTable {
                 };
             }
         }
-        Self { d_max, span, values }
+        Self {
+            d_max,
+            span,
+            values,
+        }
     }
 
     fn get(&self, dx: i32, dy: i32) -> f64 {
@@ -246,24 +260,25 @@ fn cholesky_lower_inverse(b: &[f64], n: usize) -> Vec<f64> {
     x
 }
 
-/// Widest frequency window inside `[f_lo, f_hi]` that contains no bulk state
-/// of the uniform crystal, found by sampling the supercell spectrum over the
-/// full supercell Brillouin zone on an `(n_k + 1)²` grid.
+/// Widest frequency window inside `window = (f_lo, f_hi)` that contains no
+/// bulk state of the uniform crystal, found by sampling the supercell
+/// spectrum over the full supercell Brillouin zone on an `(n_k + 1)²` grid.
 ///
 /// This is a sampling estimate. A coarse grid can miss band extrema and
 /// report a gap that is too wide, and the result also depends on the
 /// plane-wave cutoff. Check it with a denser `n_k` and a larger `n_g` before
-/// relying on it. Returns `(lower, upper)` in units of `c/a`.
+/// relying on it. `tm` selects E-polarisation (`true`) or H-polarisation.
+/// Returns `(lower, upper)` in units of `c/a`.
 pub fn bulk_gap_from_supercell(
     m: usize,
     epsilon: f64,
     r_over_a: f64,
     n_g: usize,
     n_k: usize,
-    f_lo: f64,
-    f_hi: f64,
+    window: (f64, f64),
     tm: bool,
 ) -> Option<(f64, f64)> {
+    let (f_lo, f_hi) = window;
     let rods = point_defect_rods(m, epsilon, r_over_a, epsilon, r_over_a);
     let kmax = PI / m as f64;
     let mut all: Vec<f64> = Vec::new();
@@ -322,11 +337,36 @@ mod tests {
     }
 
     #[test]
-    fn single_cell_tm_matches_single_cell_eigenproblem() {
-        // M = 1 with uniform rods: the TM problem must reproduce the bulk
-        // E_z spectrum at Γ, which the TE and TM solvers share at ε = 1.
+    fn empty_single_cell_tm_gives_unit_lightline() {
+        // M = 1, ε = 1: the first nonzero level at Γ is |G|/2π = 1 (c/a).
         let rods = point_defect_rods(1, 1.0, 0.0, 1.0, 0.0);
         let f = supercell_tm_freqs(1, &rods, 5, (0.0, 0.0));
         assert!(f[0].abs() < 1e-9 && (f[1] - 1.0).abs() < 1e-9, "{f:?}");
+    }
+
+    #[test]
+    fn missing_rod_level_sits_in_tm_gap() {
+        // Square rods, ε = 8.9, r = 0.2a (E_z). The full-zone bulk gap is
+        // about (0.324, 0.447) c/a, and a missing-rod defect puts a level at
+        // ≈ 0.393 c/a at Γ (converged to ~0.3% for ng ≥ 21). The uniform
+        // crystal has no level in (0.36, 0.42) at Γ.
+        let m = 5;
+        let ng = 17;
+        let uniform = point_defect_rods(m, 8.9, 0.2, 8.9, 0.2);
+        let missing = point_defect_rods(m, 8.9, 0.2, 1.0, 0.0);
+        let window = |f: &[f64]| -> Vec<f64> {
+            f.iter()
+                .copied()
+                .filter(|v| (0.36..0.42).contains(v))
+                .collect()
+        };
+        let bulk = window(&supercell_tm_freqs(m, &uniform, ng, (0.0, 0.0)));
+        let defect = window(&supercell_tm_freqs(m, &missing, ng, (0.0, 0.0)));
+        assert!(
+            bulk.is_empty(),
+            "uniform crystal has levels in gap: {bulk:?}"
+        );
+        assert_eq!(defect.len(), 1, "expected one defect level: {defect:?}");
+        assert!((defect[0] - 0.393).abs() < 0.01, "defect at {}", defect[0]);
     }
 }

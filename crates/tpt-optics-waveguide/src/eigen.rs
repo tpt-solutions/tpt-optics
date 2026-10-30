@@ -45,7 +45,11 @@ fn householder_tridiagonal(a: &mut [f64], n: usize, d: &mut [f64], e: &mut [f64]
                     h += a[at(i, k)] * a[at(i, k)];
                 }
                 let f = a[at(i, l)];
-                let g = if f >= 0.0 { -libm::sqrt(h) } else { libm::sqrt(h) };
+                let g = if f >= 0.0 {
+                    -libm::sqrt(h)
+                } else {
+                    libm::sqrt(h)
+                };
                 e[i] = scale * g;
                 h -= f * g;
                 a[at(i, l)] = f - g;
@@ -84,6 +88,9 @@ fn householder_tridiagonal(a: &mut [f64], n: usize, d: &mut [f64], e: &mut [f64]
     e[0] = 0.0;
 }
 
+/// Relative tolerance for splitting the tridiagonal matrix.
+const EPS: f64 = 1e-15;
+
 /// Eigenvalues of a symmetric tridiagonal matrix (diagonal `d`, off-diagonal
 /// `e[i]` coupling rows `i − 1` and `i`, with `e[0]` unused) by implicit QL.
 /// On exit `d` holds the eigenvalues in no particular order.
@@ -91,10 +98,9 @@ fn implicit_ql(d: &mut [f64], e_in: &mut [f64]) {
     let n = d.len();
     // Shift so that `e[i]` couples rows `i` and `i + 1`.
     let mut e = vec![0.0; n];
-    for i in 0..n.saturating_sub(1) {
-        e[i] = e_in[i + 1];
+    if n > 1 {
+        e[..n - 1].copy_from_slice(&e_in[1..n]);
     }
-    const EPS: f64 = 1e-15;
     for l in 0..n {
         let mut iter = 0;
         loop {
@@ -194,6 +200,9 @@ mod tests {
         // [[2,1],[1,2]] → {1, 3}.
         let mut a = vec![2.0, 1.0, 1.0, 2.0];
         let w = symmetric_eigenvalues(&mut a, 2);
-        assert!((w[0] - 1.0).abs() < 1e-12 && (w[1] - 3.0).abs() < 1e-12, "{w:?}");
+        assert!(
+            (w[0] - 1.0).abs() < 1e-12 && (w[1] - 3.0).abs() < 1e-12,
+            "{w:?}"
+        );
     }
 }

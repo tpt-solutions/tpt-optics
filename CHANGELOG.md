@@ -17,8 +17,17 @@ All notable changes to tpt-optics are documented here. Format follows
   with a defect rod at the centre; `supercell_te_freqs` solves the TE
   eigenproblem at any Bloch vector; `bulk_gap_from_supercell` samples the
   full supercell zone for the bulk gap. Checked against the exact
-  empty-lattice folding. Defect-mode frequencies are not yet quantitatively
-  converged (see module docs).
+  empty-lattice folding and against the M = 1 bulk limit. Defect-mode
+  frequencies are not yet quantitatively converged for the TE formulation
+  (see module docs).
+- **`tpt-optics-waveguide`**: E-polarisation (TM) supercell solver,
+  `supercell_tm_freqs`. It solves the generalised problem with ε Fourier
+  coefficients, which converge quickly for rods. For square rods
+  (ε = 8.9, r/a = 0.2, M = 5) it gives a full-zone gap of (0.324, 0.447) c/a
+  and a missing-rod defect level at 0.393 c/a, converged to ~0.3%.
+- **`tpt-optics-waveguide`**: `eigen` module. Dense symmetric eigenvalues by
+  Householder tridiagonalisation and implicit QL, checked against the Jacobi
+  solver. Supercell solvers use it instead of Jacobi.
 
 - **`tpt-optics-design`**: Zernike wavefront-error merit (`wavefront` module).
   `wavefront_samples` traces a hexapolar pupil grid and references each ray's

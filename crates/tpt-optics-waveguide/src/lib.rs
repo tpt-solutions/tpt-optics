@@ -23,8 +23,8 @@
 extern crate alloc;
 
 pub mod coupled;
-pub mod eigen;
 pub mod devices;
+pub mod eigen;
 pub mod eim;
 pub mod fem;
 pub mod fiber;
@@ -45,4 +45,3 @@ pub mod prelude {
     pub use crate::phc::{bragg_stack_bands, pwem_te_bands};
     pub use crate::slab::{slab_modes, SlabLayer, SlabMode};
 }
-#[cfg(test)] mod scan_tmp;
