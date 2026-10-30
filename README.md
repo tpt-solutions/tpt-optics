@@ -45,7 +45,7 @@ let wl = Wavelength::from_nm(632.8);
 // Refractive index of BK7 at that wavelength via the Sellmeier model.
 let bk7 = Sellmeier::bk7();
 let n = bk7.index(wl).re();
-assert!((n - 1.514_72).abs() < 1e-4);
+assert!((n - 1.5151).abs() < 1e-4);
 ```
 
 See each crate's rustdoc for full examples (`cargo doc --open`).
