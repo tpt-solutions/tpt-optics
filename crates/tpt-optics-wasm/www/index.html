@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tpt-optics: singlet explorer</title>
+  <style>
+    :root { --fg: #1d1d1f; --muted: #6e6e73; --bg: #fbfbfd; --card: #ffffff; --accent: #0a6cff; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --card: #2c2c2e; --accent: #4f9bff; }
+    }
+    :root[data-theme="dark"] { --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --card: #2c2c2e; --accent: #4f9bff; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+    main { max-width: 640px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 4px 0 12px; }
+    .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+    label { display: grid; grid-template-columns: 9em 1fr 4.5em; align-items: center; gap: 8px; margin: 8px 0; }
+    input[type=range] { width: 100%; accent-color: var(--accent); }
+    output { font-variant-numeric: tabular-nums; text-align: right; }
+    select { font: inherit; padding: 4px; }
+    .result { font-size: 18px; font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .error { color: #d70015; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Singlet explorer</h1>
+  <div class="card">
+    <label>R1 (mm)
+      <input id="r1" type="range" min="40" max="300" step="1" value="100">
+      <output id="r1o">100</output>
+    </label>
+    <label>R2 (mm)
+      <input id="r2" type="range" min="-300" max="-40" step="1" value="-100">
+      <output id="r2o">-100</output>
+    </label>
+    <label>Thickness (mm)
+      <input id="t" type="range" min="1" max="15" step="0.5" value="5">
+      <output id="to">5</output>
+    </label>
+    <label>Semi-diameter (mm)
+      <input id="sd" type="range" min="2" max="20" step="0.5" value="12.5">
+      <output id="sdo">12.5</output>
+    </label>
+    <label>Glass
+      <select id="glass">
+        <option>N-BK7</option>
+        <option>N-SF11</option>
+        <option>F2</option>
+      </select>
+      <span></span>
+    </label>
+  </div>
+  <div class="card">
+    <div class="result">EFL: <span id="efl">…</span></div>
+    <div class="result">On-axis RMS spot: <span id="spot">…</span></div>
+    <div class="muted" id="status">Loading the WebAssembly module…</div>
+  </div>
+  <div class="card muted">
+    Lengths are in millimetres. The image plane sits at the paraxial focus, and
+    the spot is traced over the full aperture. Built from <code>crates/tpt-optics-wasm</code>.
+  </div>
+</main>
+<script type="module">
+  import init, { singlet_report, glass_index } from "../pkg/tpt_optics_wasm.js";
+
+  const ids = ["r1", "r2", "t", "sd"];
+  const el = (id) => document.getElementById(id);
+  let ready = false;
+
+  function update() {
+    for (const id of ids) el(id + "o").textContent = el(id).value;
+    if (!ready) return;
+    try {
+      const report = JSON.parse(
+        singlet_report(
+          Number(el("r1").value),
+          Number(el("r2").value),
+          Number(el("t").value),
+          Number(el("sd").value),
+          el("glass").value,
+        ),
+      );
+      el("efl").textContent = report.efl === null ? "afocal" : `${(report.efl * 1e3).toFixed(2)} mm`;
+      const spot = report.fields[0].rms_spot;
+      el("spot").textContent = spot === null ? "n/a" : `${(spot * 1e6).toFixed(1)} µm`;
+      el("status").textContent = "Traced in your browser.";
+      el("status").classList.remove("error");
+    } catch (e) {
+      el("status").textContent = String(e);
+      el("status").classList.add("error");
+    }
+  }
+
+  await init();
+  ready = true;
+  for (const id of [...ids, "glass"]) el(id).addEventListener("input", update);
+  update();
+  console.debug("N-BK7 at 632.8 nm:", glass_index("N-BK7", 632.8));
+</script>
+</body>
+</html>

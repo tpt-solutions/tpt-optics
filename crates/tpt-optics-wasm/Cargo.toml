@@ -1,0 +1,22 @@
+[package]
+name = "tpt-optics-wasm"
+description = "WebAssembly bindings and a browser demo for tpt-optics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tpt-optics = { workspace = true, features = ["geometric", "io", "design"] }
+wasm-bindgen = { workspace = true }
+
+[lints]
+workspace = true

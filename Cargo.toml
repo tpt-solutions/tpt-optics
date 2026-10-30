@@ -15,6 +15,7 @@ members = [
     "crates/tpt-optics-io",
     "crates/tpt-optics",
     "crates/tpt-optics-cli",
+    "crates/tpt-optics-wasm",
     "xtask",
 ]
 
