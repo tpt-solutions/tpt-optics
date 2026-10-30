@@ -25,6 +25,40 @@ impl ParamBound {
     }
 }
 
+/// Why an optimization run stopped.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// The last accepted step lowered the cost by less than a relative
+    /// `1e-12`, or the cost reached exactly zero.
+    Converged,
+    /// The iteration or generation budget ran out.
+    MaxIterations,
+    /// No trial step lowered the cost, even at the largest damping.
+    Stalled,
+    /// The observer asked the run to stop.
+    Cancelled,
+}
+
+/// What an observer tells the optimiser to do after an iteration.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Control {
+    /// Keep going.
+    Continue,
+    /// Stop now and return the best point so far.
+    Cancel,
+}
+
+/// Snapshot passed to an observer at the start of each iteration.
+#[derive(Copy, Clone, Debug)]
+pub struct Progress<'a> {
+    /// Zero-based iteration number.
+    pub iteration: usize,
+    /// Current sum of squared residuals.
+    pub cost: f64,
+    /// Current parameter vector.
+    pub x: &'a [f64],
+}
+
 /// Result of an optimization run.
 #[derive(Clone, Debug)]
 pub struct OptimizeResult {
@@ -34,6 +68,10 @@ pub struct OptimizeResult {
     pub f: f64,
     /// Objective evaluations spent.
     pub evaluations: usize,
+    /// Best objective after each iteration, step, or generation.
+    pub history: Vec<f64>,
+    /// Why the run stopped.
+    pub stop: StopReason,
 }
 
 /// Objective trait: `f(x) -> cost` (minimization).
@@ -65,7 +103,7 @@ pub fn numeric_jacobian<R: Fn(&[f64], &mut Vec<f64>)>(
     let mut rm = alloc::vec![0.0; n_res];
     let mut xs = x.to_vec();
     for j in 0..n {
-        let hj = h.max(1e-9 * x[j].abs());
+        let hj = h.max(1e-9 * libm::fabs(x[j]));
         xs[j] = x[j] + hj;
         r(&xs, &mut rp);
         xs[j] = x[j] - hj;
@@ -101,9 +139,9 @@ fn damped_normal_equations(jac: &[f64], r: &[f64], n: usize, lambda: f64) -> Opt
     }
     // Gaussian elimination with partial pivoting.
     for col in 0..n {
-        let (mut piv, mut prow) = (a[col * n + col].abs(), col);
+        let (mut piv, mut prow) = (libm::fabs(a[col * n + col]), col);
         for row in (col + 1)..n {
-            let v = a[row * n + col].abs();
+            let v = libm::fabs(a[row * n + col]);
             if v > piv {
                 piv = v;
                 prow = row;
@@ -154,6 +192,65 @@ pub fn damped_least_squares<R>(
 where
     R: Fn(&[f64], &mut Vec<f64>),
 {
+    damped_least_squares_observed(r, x0, n_res, bounds, iterations, &mut |_| Control::Continue)
+}
+
+/// Levenberg–Marquardt with an observer. The observer sees the state at the
+/// start of each iteration and can cancel the run by returning
+/// [`Control::Cancel`]. The run then stops with [`StopReason::Cancelled`].
+pub fn damped_least_squares_observed<R, C>(
+    r: &R,
+    x0: &[f64],
+    n_res: usize,
+    bounds: Option<&[ParamBound]>,
+    iterations: usize,
+    observer: &mut C,
+) -> OptimizeResult
+where
+    R: Fn(&[f64], &mut Vec<f64>),
+    C: FnMut(&Progress<'_>) -> Control,
+{
+    let jacobian =
+        |x: &[f64]| numeric_jacobian(&|xv: &[f64], out: &mut Vec<f64>| r(xv, out), x, n_res, 1e-7);
+    lm_observed_with(r, &jacobian, x0, n_res, bounds, iterations, observer)
+}
+
+/// Levenberg–Marquardt with a caller-supplied Jacobian.
+///
+/// `jacobian(x)` returns the `n_res × x.len()` matrix in row-major order. Use
+/// it when the derivatives are known (for example from dual-number tracing)
+/// and finite differences would be slow or inexact.
+pub fn damped_least_squares_with_jacobian<R, J, C>(
+    r: &R,
+    jacobian: &J,
+    x0: &[f64],
+    n_res: usize,
+    bounds: Option<&[ParamBound]>,
+    iterations: usize,
+    observer: &mut C,
+) -> OptimizeResult
+where
+    R: Fn(&[f64], &mut Vec<f64>),
+    J: Fn(&[f64]) -> Vec<f64>,
+    C: FnMut(&Progress<'_>) -> Control,
+{
+    lm_observed_with(r, jacobian, x0, n_res, bounds, iterations, observer)
+}
+
+fn lm_observed_with<R, J, C>(
+    r: &R,
+    jacobian: &J,
+    x0: &[f64],
+    n_res: usize,
+    bounds: Option<&[ParamBound]>,
+    iterations: usize,
+    observer: &mut C,
+) -> OptimizeResult
+where
+    R: Fn(&[f64], &mut Vec<f64>),
+    J: Fn(&[f64]) -> Vec<f64>,
+    C: FnMut(&Progress<'_>) -> Control,
+{
     let n = x0.len();
     let mut x = x0.to_vec();
     clamp_all(&mut x, bounds);
@@ -162,10 +259,30 @@ where
     let mut cost: f64 = resid.iter().map(|v| v * v).sum();
     let mut lambda = 1e-3_f64;
     let mut evals = 1usize;
-    for _ in 0..iterations {
-        let jac = numeric_jacobian(&|xv, out| r(xv, out), &x, n_res, 1e-7);
+    let mut history = Vec::with_capacity(iterations);
+    let mut stop = StopReason::MaxIterations;
+    for iteration in 0..iterations {
+        if cost == 0.0 {
+            stop = StopReason::Converged;
+            break;
+        }
+        let progress = Progress {
+            iteration,
+            cost,
+            x: &x,
+        };
+        if observer(&progress) == Control::Cancel {
+            stop = StopReason::Cancelled;
+            break;
+        }
+        let jac = jacobian(&x);
         let Some(step) = damped_normal_equations(&jac, &resid, n, lambda) else {
             lambda *= 10.0;
+            history.push(cost);
+            if lambda >= 1e8 {
+                stop = StopReason::Stalled;
+                break;
+            }
             continue;
         };
         let mut trial = x.clone();
@@ -178,13 +295,21 @@ where
         let trial_cost: f64 = trial_resid.iter().map(|v| v * v).sum();
         evals += 2;
         if trial_cost < cost {
+            let relative = (cost - trial_cost) / cost;
             x = trial;
             resid = trial_resid;
             cost = trial_cost;
             lambda = (lambda * 0.3).max(1e-10);
+            history.push(cost);
+            if relative < 1e-12 {
+                stop = StopReason::Converged;
+                break;
+            }
         } else {
             lambda = (lambda * 5.0).min(1e8);
+            history.push(cost);
             if lambda >= 1e8 {
+                stop = StopReason::Stalled;
                 break;
             }
         }
@@ -193,6 +318,8 @@ where
         x,
         f: cost,
         evaluations: evals,
+        history,
+        stop,
     }
 }
 
@@ -222,6 +349,7 @@ pub fn simulated_annealing<O: Objective>(
     let mut best = x.clone();
     let mut f_best = fx;
     let mut evals = 1usize;
+    let mut history = Vec::with_capacity(steps);
     for k in 0..steps {
         let t = t0 * libm::exp(-(k as f64) / (steps as f64 / 6.0));
         let mut trial = x.clone();
@@ -240,11 +368,14 @@ pub fn simulated_annealing<O: Objective>(
                 best.clone_from(&x);
             }
         }
+        history.push(f_best);
     }
     OptimizeResult {
         x: best,
         f: f_best,
         evaluations: evals,
+        history,
+        stop: StopReason::MaxIterations,
     }
 }
 
@@ -273,6 +404,7 @@ pub fn genetic_minimize<O: Objective>(
             f.eval(ind)
         })
         .collect();
+    let mut history = Vec::with_capacity(generations);
     for _ in 0..generations {
         // Elitism: carry the best individual unchanged.
         let mut best_i = 0;
@@ -321,6 +453,7 @@ pub fn genetic_minimize<O: Objective>(
         }
         pop = next;
         scores = next_scores;
+        history.push(scores.iter().copied().fold(f64::INFINITY, f64::min));
     }
     let mut best_i = 0;
     for (i, s) in scores.iter().enumerate() {
@@ -332,6 +465,8 @@ pub fn genetic_minimize<O: Objective>(
         x: pop[best_i].clone(),
         f: scores[best_i],
         evaluations: evals,
+        history,
+        stop: StopReason::MaxIterations,
     }
 }
 
@@ -429,5 +564,123 @@ mod nan_tests {
         let r = genetic_minimize(&f, &bounds, 20, 30, 3);
         assert!(r.f.is_finite(), "best f = {}", r.f);
         assert!(r.x[0] >= 0.0);
+    }
+}
+
+#[cfg(test)]
+mod observer_tests {
+    use super::*;
+
+    fn linear(x: &[f64], out: &mut Vec<f64>) {
+        out.clear();
+        out.push(x[0] - 1.0);
+        out.push(x[1] + 2.0);
+    }
+
+    #[test]
+    fn observer_can_cancel_the_run() {
+        let mut seen = Vec::new();
+        let res = damped_least_squares_observed(&linear, &[0.0, 0.0], 2, None, 50, &mut |p| {
+            seen.push(p.iteration);
+            if p.iteration >= 2 {
+                Control::Cancel
+            } else {
+                Control::Continue
+            }
+        });
+        assert_eq!(res.stop, StopReason::Cancelled);
+        assert_eq!(seen, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn observer_sees_the_cost_falling() {
+        let mut costs = Vec::new();
+        let _ = damped_least_squares_observed(&linear, &[0.0, 0.0], 2, None, 50, &mut |p| {
+            costs.push(p.cost);
+            Control::Continue
+        });
+        assert!(
+            costs.len() >= 2 && costs.windows(2).all(|w| w[1] <= w[0]),
+            "{costs:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stop_reason_tests {
+    use super::*;
+
+    /// Linear residual with its minimum at `(1, −2)`.
+    fn linear(x: &[f64], out: &mut Vec<f64>) {
+        out.clear();
+        out.push(x[0] - 1.0);
+        out.push(x[1] + 2.0);
+    }
+
+    #[test]
+    fn damped_least_squares_reports_convergence_and_history() {
+        let r = linear;
+        let res = damped_least_squares(&r, &[0.0, 0.0], 2, None, 50);
+        assert_eq!(res.stop, StopReason::Converged);
+        assert!(res.f < 1e-20, "{}", res.f);
+        assert_ne!(res.history.len(), 0);
+        assert!(
+            res.history.windows(2).all(|w| w[1] <= w[0]),
+            "{:?}",
+            res.history
+        );
+    }
+
+    #[test]
+    fn running_out_of_iterations_is_reported() {
+        let r = linear;
+        let res = damped_least_squares(&r, &[0.0, 0.0], 2, None, 1);
+        assert_eq!(res.stop, StopReason::MaxIterations);
+    }
+
+    #[test]
+    fn a_flat_residual_is_reported_as_stalled() {
+        // Zero Jacobian: no step can lower the cost, so damping grows until it
+        // is refused.
+        let r = |_x: &[f64], out: &mut Vec<f64>| {
+            out.clear();
+            out.push(1.0);
+        };
+        let res = damped_least_squares(&r, &[0.0], 1, None, 500);
+        assert_eq!(res.stop, StopReason::Stalled);
+    }
+}
+
+#[cfg(test)]
+mod supplied_jacobian_tests {
+    use super::*;
+
+    fn residual(x: &[f64], out: &mut Vec<f64>) {
+        out.clear();
+        out.push(x[0] * x[0] - 2.0);
+        out.push(x[0] + 3.0 * x[1] - 5.0);
+    }
+
+    fn analytic(x: &[f64]) -> Vec<f64> {
+        // Row-major 2 × 2: d/dx0, d/dx1 of the two residuals.
+        alloc::vec![2.0 * x[0], 0.0, 1.0, 3.0]
+    }
+
+    #[test]
+    fn analytic_jacobian_gives_the_same_solution_as_finite_differences() {
+        let numeric = damped_least_squares(&residual, &[1.0, 1.0], 2, None, 60);
+        let exact = damped_least_squares_with_jacobian(
+            &residual,
+            &analytic,
+            &[1.0, 1.0],
+            2,
+            None,
+            60,
+            &mut |_| Control::Continue,
+        );
+        assert!((numeric.f - exact.f).abs() < 1e-18 + 1e-12 * numeric.f.max(1.0));
+        for (a, b) in numeric.x.iter().zip(&exact.x) {
+            assert!((a - b).abs() < 1e-8, "{a} vs {b}");
+        }
     }
 }

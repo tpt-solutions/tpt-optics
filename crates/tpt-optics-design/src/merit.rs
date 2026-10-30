@@ -62,7 +62,7 @@ pub fn distortion(system: &SequentialSystem, ctx: TraceContext, field_angle_deg:
         return f64::NAN;
     };
     let y_ideal = abcd.b * libm::tan(theta);
-    if y_ideal.abs() < 1e-15 {
+    if libm::fabs(y_ideal) < 1e-15 {
         return 0.0;
     }
     (point.y - y_ideal) / y_ideal

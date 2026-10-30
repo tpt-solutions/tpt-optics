@@ -74,18 +74,97 @@ where
     M: Fn(&[f64]) -> f64,
 {
     let mut rng = Rng::new(seed);
-    let mut values: Vec<f64> = Vec::with_capacity(passes);
-    for _ in 0..passes {
-        let mut x = base.to_vec();
-        for t in tolerances {
-            let (i, e) = t.sample(&mut rng);
-            x[i] += e;
-        }
-        if let Some((ci, target)) = compensator {
-            x[ci] = solve_compensator(&merit, &x, ci, target);
-        }
-        values.push(merit(&x));
+    let values: Vec<f64> = (0..passes)
+        .map(|_| one_run(base, tolerances, compensator, merit, &mut rng))
+        .collect();
+    summarize(values, pass_limit)
+}
+
+/// Like [`analyze`], but each run draws from its own generator, seeded from
+/// `seed` and the run index. The result does not depend on how the runs are
+/// scheduled, so [`analyze_parallel`] gives exactly the same statistics.
+pub fn analyze_seeded<M>(
+    base: &[f64],
+    tolerances: &[Tolerance],
+    compensator: Option<(usize, f64)>,
+    merit: &M,
+    passes: usize,
+    pass_limit: f64,
+    seed: u64,
+) -> ToleranceStats
+where
+    M: Fn(&[f64]) -> f64,
+{
+    let values: Vec<f64> = (0..passes)
+        .map(|i| {
+            let mut rng = Rng::new(run_seed(seed, i as u64));
+            one_run(base, tolerances, compensator, merit, &mut rng)
+        })
+        .collect();
+    summarize(values, pass_limit)
+}
+
+/// Parallel form of [`analyze_seeded`], on the rayon thread pool. The
+/// statistics are identical to the serial result for the same seed.
+#[cfg(feature = "parallel")]
+pub fn analyze_parallel<M>(
+    base: &[f64],
+    tolerances: &[Tolerance],
+    compensator: Option<(usize, f64)>,
+    merit: &M,
+    passes: usize,
+    pass_limit: f64,
+    seed: u64,
+) -> ToleranceStats
+where
+    M: Fn(&[f64]) -> f64 + Sync,
+{
+    use rayon::prelude::*;
+    let values: Vec<f64> = (0..passes)
+        .into_par_iter()
+        .map(|i| {
+            let mut rng = Rng::new(run_seed(seed, i as u64));
+            one_run(base, tolerances, compensator, merit, &mut rng)
+        })
+        .collect();
+    summarize(values, pass_limit)
+}
+
+/// Seed of run `index` derived from the base `seed` (SplitMix64 mixing).
+fn run_seed(seed: u64, index: u64) -> u64 {
+    fn mix(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
+    mix(seed ^ mix(index.wrapping_add(0x9E37_79B9_7F4A_7C15)))
+}
+
+/// One tolerance run: perturb the parameters, apply the compensator, and
+/// return the merit.
+fn one_run<M>(
+    base: &[f64],
+    tolerances: &[Tolerance],
+    compensator: Option<(usize, f64)>,
+    merit: &M,
+    rng: &mut Rng,
+) -> f64
+where
+    M: Fn(&[f64]) -> f64,
+{
+    let mut x = base.to_vec();
+    for t in tolerances {
+        let (i, e) = t.sample(rng);
+        x[i] += e;
+    }
+    if let Some((ci, target)) = compensator {
+        x[ci] = solve_compensator(merit, &x, ci, target);
+    }
+    merit(&x)
+}
+
+/// Statistics of a list of merit values.
+fn summarize(mut values: Vec<f64>, pass_limit: f64) -> ToleranceStats {
     values.sort_by(f64::total_cmp);
     let n = values.len() as f64;
     let mean = values.iter().sum::<f64>() / n;
@@ -110,7 +189,7 @@ fn solve_compensator<M>(merit: &M, x: &[f64], ci: usize, target: f64) -> f64
 where
     M: Fn(&[f64]) -> f64,
 {
-    let half_width = 0.1 * x[ci].abs().max(1e-3) * 10.0;
+    let half_width = 0.1 * libm::fabs(x[ci]).max(1e-3) * 10.0;
     let g = |c: f64| -> f64 {
         let mut xt = x.to_vec();
         xt[ci] = c;
@@ -212,5 +291,44 @@ mod nan_tolerance_tests {
         // A merit that is undefined everywhere must fail every sample, not pass.
         let stats = analyze(&[0.0], &[], None, &|_x: &[f64]| f64::NAN, 8, 1.0, 1);
         assert_eq!(stats.failure_fraction, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod seeded_tests {
+    use super::*;
+
+    fn merit(x: &[f64]) -> f64 {
+        libm::sqrt(x.iter().map(|v| v * v).sum::<f64>())
+    }
+
+    fn tols() -> [Tolerance; 2] {
+        [
+            Tolerance::Normal {
+                index: 0,
+                sigma: 0.1,
+            },
+            Tolerance::Uniform {
+                index: 1,
+                half_width: 0.2,
+            },
+        ]
+    }
+
+    #[test]
+    fn seeded_analysis_is_reproducible() {
+        let a = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 7);
+        let b = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 7);
+        assert_eq!(a, b);
+        let c = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 8);
+        assert_ne!(a.mean, c.mean);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_analysis_matches_the_serial_result_exactly() {
+        let serial = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 500, 0.5, 11);
+        let parallel = analyze_parallel(&[1.0, 2.0], &tols(), None, &merit, 500, 0.5, 11);
+        assert_eq!(serial, parallel);
     }
 }

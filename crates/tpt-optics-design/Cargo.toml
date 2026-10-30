@@ -13,7 +13,13 @@ keywords = ["lens-design", "optimization", "tolerancing", "zernike", "optics"]
 categories = ["science", "simulation", "mathematics", "no-std"]
 readme = "README.md"
 
+[features]
+default = []
+# Parallel Monte-Carlo tolerance analysis on the rayon thread pool.
+parallel = ["dep:rayon"]
+
 [dependencies]
+rayon = { workspace = true, optional = true }
 tpt-optics-core = { workspace = true }
 tpt-optics-geometric = { workspace = true }
 libm = { workspace = true }

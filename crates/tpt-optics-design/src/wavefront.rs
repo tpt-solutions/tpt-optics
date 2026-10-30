@@ -88,7 +88,7 @@ pub fn wavefront_samples(
             let d = res.exit_direction;
             // Distance along the ray to the chief-centred reference plane.
             let denom = d.dot(exit_c);
-            if denom.abs() < 1e-15 {
+            if libm::fabs(denom) < 1e-15 {
                 return None;
             }
             let s = (p_chief - p).dot(exit_c) / denom;
@@ -158,8 +158,9 @@ pub fn wavefront_rms(samples: &[PupilSample], max_j: u32) -> f64 {
 fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
-        let pivot = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
-        if a[pivot][col].abs() < 1e-300 {
+        let pivot =
+            (col..n).max_by(|&i, &j| libm::fabs(a[i][col]).total_cmp(&libm::fabs(a[j][col])))?;
+        if libm::fabs(a[pivot][col]) < 1e-300 {
             return None;
         }
         a.swap(col, pivot);

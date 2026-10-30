@@ -15,7 +15,24 @@
 
 extern crate alloc;
 
+// rayon needs the standard library, which the crate otherwise avoids.
+#[cfg(feature = "parallel")]
+extern crate std;
+
+pub mod analysis;
+pub mod check;
+pub mod glassmap;
+pub mod gradient;
 pub mod merit;
+pub mod operands;
 pub mod optimize;
+pub mod params;
+pub mod sweep;
 pub mod tolerance;
 pub mod wavefront;
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;
