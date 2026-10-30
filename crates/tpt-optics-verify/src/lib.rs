@@ -17,3 +17,10 @@ extern crate alloc;
 pub mod invariants;
 pub mod kani;
 pub mod strategies;
+pub mod system_check;
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;
