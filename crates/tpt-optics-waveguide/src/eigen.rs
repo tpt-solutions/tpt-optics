@@ -196,6 +196,32 @@ mod tests {
     }
 
     #[test]
+    fn empty_and_scalar_matrices() {
+        let mut none: Vec<f64> = Vec::new();
+        assert_eq!(symmetric_eigenvalues(&mut none, 0), Vec::<f64>::new());
+        let mut one = vec![-4.5];
+        assert_eq!(symmetric_eigenvalues(&mut one, 1), vec![-4.5]);
+    }
+
+    #[test]
+    fn repeated_eigenvalues_are_all_returned() {
+        // 3·I has eigenvalue 3 with multiplicity 3.
+        let mut a = vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0];
+        let w = symmetric_eigenvalues(&mut a, 3);
+        assert_eq!(w.len(), 3);
+        assert!(w.iter().all(|v| (v - 3.0).abs() < 1e-12), "{w:?}");
+    }
+
+    #[test]
+    fn nan_input_returns_without_hanging() {
+        // The QL iteration is capped, so NaN input must terminate. The result
+        // is not meaningful, but it must have one value per row.
+        let mut a = vec![f64::NAN, 1.0, 1.0, 2.0];
+        let w = symmetric_eigenvalues(&mut a, 2);
+        assert_eq!(w.len(), 2);
+    }
+
+    #[test]
     fn known_spectrum() {
         // [[2,1],[1,2]] → {1, 3}.
         let mut a = vec![2.0, 1.0, 1.0, 2.0];

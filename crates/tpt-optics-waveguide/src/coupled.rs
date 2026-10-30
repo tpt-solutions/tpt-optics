@@ -2,12 +2,45 @@
 //! resonators.
 //!
 //! Standard analytical CMT formulas, each parameterised the way design
-//! engineers use them.
+//! engineers use them. Helpers that divide by a design parameter return
+//! `None` when that parameter is zero or not positive, rather than an
+//! infinity or NaN.
 
 use alloc::vec::Vec;
 
 use libm::{sin, sqrt};
 use tpt_optics_core::Wavelength;
+
+/// Largest number of ring resonances [`ring_resonances`] will list. A window
+/// that needs more is an error, so a tiny `wl_min` cannot exhaust memory.
+pub const MAX_RESONANCES: usize = 1_000_000;
+
+/// Errors from the coupled-mode helpers.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum CoupledError {
+    /// An input is non-finite or outside its valid range. The message names it.
+    InvalidParameter(&'static str),
+    /// The requested window contains more resonances than [`MAX_RESONANCES`].
+    /// `count` is the number it would have produced.
+    TooManyResonances {
+        /// Number of resonance orders in the window.
+        count: f64,
+    },
+}
+
+impl core::fmt::Display for CoupledError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidParameter(msg) => write!(f, "invalid coupled-mode parameter: {msg}"),
+            Self::TooManyResonances { count } => write!(
+                f,
+                "window contains {count} resonances (limit {MAX_RESONANCES}); narrow it"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for CoupledError {}
 
 /// Power in the cross port of a lossless directional coupler after
 /// length `z`: `P₂(z) = P₀·sin²(κz)` (and `P₁ = P₀·cos²(κz)`).
@@ -20,10 +53,10 @@ pub fn coupler_power(kappa: f64, z: f64, p_in: f64) -> (f64, f64) {
 }
 
 /// Complete-coupling length `Lc = π/(2κ)` — the shortest transfer of 100 %
-/// of the power to the cross port.
+/// of the power to the cross port. `None` unless `κ` is positive and finite.
 #[must_use]
-pub fn coupling_length(kappa: f64) -> f64 {
-    core::f64::consts::FRAC_PI_2 / kappa
+pub fn coupling_length(kappa: f64) -> Option<f64> {
+    (kappa.is_finite() && kappa > 0.0).then(|| core::f64::consts::FRAC_PI_2 / kappa)
 }
 
 /// Peak reflectivity of a uniform Bragg grating with coupling coefficient
@@ -50,7 +83,13 @@ pub fn bragg_wavelength(n_eff: f64, period: f64) -> f64 {
 pub fn grating_spectrum(kappa: f64, length: f64, delta_beta: f64) -> f64 {
     let s2 = kappa * kappa - delta_beta * delta_beta;
     let g = if s2 > 0.0 {
-        let sh = libm::sinh(sqrt(s2) * length);
+        let sl = sqrt(s2) * length;
+        // sinh² overflows an f64 past here. R = κ²G/(1 + κ²G) is 1 to double
+        // precision long before that point.
+        if sl > 350.0 {
+            return 1.0;
+        }
+        let sh = libm::sinh(sl);
         sh * sh / s2
     } else if s2 < 0.0 {
         let sn = sin(sqrt(-s2) * length);
@@ -67,41 +106,70 @@ pub fn grating_spectrum(kappa: f64, length: f64, delta_beta: f64) -> f64 {
 /// effective index; adjacent resonances are spaced by the free spectral
 /// range `λ²/(n_g·L)` (see [`ring_fsr`]), which uses the group index.
 ///
-/// Returns the resonances within `[wl_min, wl_max]`, in ascending order.
-pub fn ring_resonances(n_eff: f64, circumference: f64, wl_min: f64, wl_max: f64) -> Vec<f64> {
-    let mut out = Vec::new();
-    if !(wl_min > 0.0 && wl_max >= wl_min && n_eff > 0.0 && circumference > 0.0) {
-        return out;
+/// Returns the resonances within `[wl_min, wl_max]`, in ascending order. A
+/// window with no resonance gives an empty list. A window with more than
+/// [`MAX_RESONANCES`] of them is an error.
+pub fn ring_resonances(
+    n_eff: f64,
+    circumference: f64,
+    wl_min: f64,
+    wl_max: f64,
+) -> Result<Vec<f64>, CoupledError> {
+    if !(wl_min.is_finite() && wl_max.is_finite() && wl_min > 0.0 && wl_max >= wl_min) {
+        return Err(CoupledError::InvalidParameter(
+            "wavelength window must be finite, positive and ordered",
+        ));
+    }
+    if !(n_eff.is_finite() && circumference.is_finite() && n_eff > 0.0 && circumference > 0.0) {
+        return Err(CoupledError::InvalidParameter(
+            "n_eff and circumference must be positive and finite",
+        ));
     }
     let optical_length = n_eff * circumference;
     // λ_m = L_opt/m lies in the window when m ∈ [L_opt/wl_max, L_opt/wl_min].
-    let m_lo = libm::ceil(optical_length / wl_max).max(1.0) as i64;
-    let m_hi = libm::floor(optical_length / wl_min) as i64;
-    for m in m_lo..=m_hi {
-        out.push(optical_length / m as f64);
+    let m_lo = libm::ceil(optical_length / wl_max).max(1.0);
+    let m_hi = libm::floor(optical_length / wl_min);
+    // Count in floating point first: a tiny wl_min makes m_hi enormous.
+    let count = m_hi - m_lo + 1.0;
+    if count > MAX_RESONANCES as f64 {
+        return Err(CoupledError::TooManyResonances { count });
+    }
+    let mut out = Vec::new();
+    let mut m = m_lo;
+    while m <= m_hi {
+        out.push(optical_length / m);
+        m += 1.0;
     }
     out.sort_by(f64::total_cmp);
-    out
+    Ok(out)
 }
 
-/// Free spectral range at wavelength `wl`: `FSR = λ²/(n_g·L)`.
+/// Free spectral range at wavelength `wl`: `FSR = λ²/(n_g·L)`. `None` unless
+/// `n_g·L` is positive and finite.
 #[must_use]
-pub fn ring_fsr(n_group: f64, circumference: f64, wl: Wavelength) -> f64 {
-    wl.m() * wl.m() / (n_group * circumference)
+pub fn ring_fsr(n_group: f64, circumference: f64, wl: Wavelength) -> Option<f64> {
+    let optical = n_group * circumference;
+    (optical.is_finite() && optical > 0.0).then(|| wl.m() * wl.m() / optical)
 }
 
-/// Lorentzian ring resonance: intensity through a critically-coupled
-/// all-pass-like response near resonance with linewidth (FWHM) `delta_wl`.
+/// Normalised Lorentzian line shape with linewidth (FWHM) `delta_wl`: 1 at
+/// `wl_res`, one half at `wl_res ± delta_wl/2`. This is the peak shape of the
+/// drop-port response. The through-port transmission dips by the same
+/// amount. `None` unless `delta_wl` is positive and finite.
 #[must_use]
-pub fn ring_lorentzian(wl: f64, wl_res: f64, delta_wl: f64) -> f64 {
+pub fn ring_lorentzian(wl: f64, wl_res: f64, delta_wl: f64) -> Option<f64> {
+    if !(delta_wl.is_finite() && delta_wl > 0.0) {
+        return None;
+    }
     let d = (wl - wl_res) / (0.5 * delta_wl);
-    1.0 / (1.0 + d * d)
+    Some(1.0 / (1.0 + d * d))
 }
 
-/// Quality factor from resonance and linewidth: `Q = λ_res/Δλ_FWHM`.
+/// Quality factor from resonance and linewidth: `Q = λ_res/Δλ_FWHM`. `None`
+/// unless the linewidth is positive and finite.
 #[must_use]
-pub fn ring_q(wl_res: f64, fwhm: f64) -> f64 {
-    wl_res / fwhm
+pub fn ring_q(wl_res: f64, fwhm: f64) -> Option<f64> {
+    (fwhm.is_finite() && fwhm > 0.0).then(|| wl_res / fwhm)
 }
 
 #[cfg(test)]
@@ -119,7 +187,7 @@ mod tests {
     #[test]
     fn coupler_conserves_and_transfers() {
         let kappa = 500.0; // 1/m
-        let lc = coupling_length(kappa);
+        let lc = coupling_length(kappa).unwrap();
         assert!(close(lc, core::f64::consts::FRAC_PI_2 / 500.0, 1e-15));
         // Full transfer at Lc.
         let (through, cross) = coupler_power(kappa, lc, 1.0);
@@ -130,6 +198,13 @@ mod tests {
             let (t, c) = coupler_power(kappa, frac * lc, 1.0);
             assert!(close(t + c, 1.0, 1e-12));
         }
+    }
+
+    #[test]
+    fn zero_coupling_has_no_coupling_length() {
+        // κ = 0 used to return infinity.
+        assert_eq!(coupling_length(0.0), None);
+        assert_eq!(coupling_length(f64::NAN), None);
     }
 
     #[test]
@@ -151,16 +226,25 @@ mod tests {
     }
 
     #[test]
+    fn strong_grating_spectrum_saturates_instead_of_nan() {
+        // κL = 1000 overflows sinh² in the direct form and gave NaN.
+        let r = grating_spectrum(1e6, 1e-3, 0.0);
+        assert!(r.is_finite() && (r - 1.0).abs() < 1e-12, "{r}");
+        let r = grating_spectrum(1e6, 1e-3, 0.5e6);
+        assert!(r.is_finite() && (0.0..=1.0).contains(&r), "{r}");
+    }
+
+    #[test]
     fn ring_fsr_and_resonances() {
         // Ring radius 50 µm → L ≈ 314 µm; n_g = 4.2 (Si wire).
         let n_g = 4.2;
         let circ = core::f64::consts::TAU * 50e-6;
-        let fsr = ring_fsr(n_g, circ, wl(1550.0));
+        let fsr = ring_fsr(n_g, circ, wl(1550.0)).unwrap();
         // FSR ≈ 1.9 nm
         assert!(fsr > 1.0e-9 && fsr < 3.0e-9, "FSR = {fsr}");
         // Absolute positions use the effective index (≈2.4 for this wire).
         let n_eff = 2.4;
-        let resonances = ring_resonances(n_eff, circ, 1540e-9, 1560e-9);
+        let resonances = ring_resonances(n_eff, circ, 1540e-9, 1560e-9).unwrap();
         assert!(resonances.len() >= 2, "{resonances:?}");
         // Every resonance is an integer order: m·λ = n_eff·L.
         for &lam in &resonances {
@@ -170,7 +254,7 @@ mod tests {
         // Adjacent spacing is λ²/(n_eff·L) near 1550 nm, within 2 % (the
         // spacing varies with λ² across the window).
         let d = resonances[1] - resonances[0];
-        let spacing_neff = ring_fsr(n_eff, circ, wl(1550.0));
+        let spacing_neff = ring_fsr(n_eff, circ, wl(1550.0)).unwrap();
         assert!(
             close(d, spacing_neff, 0.02 * spacing_neff),
             "{d} vs {spacing_neff}"
@@ -178,13 +262,46 @@ mod tests {
         // Lorentzian shape: half maximum at ±FWHM/2.
         let lam0 = 1550e-9;
         let fwhm = 0.1e-9;
-        assert!(close(ring_lorentzian(lam0, lam0, fwhm), 1.0, 1e-15));
         assert!(close(
-            ring_lorentzian(lam0 + 0.5 * fwhm, lam0, fwhm),
+            ring_lorentzian(lam0, lam0, fwhm).unwrap(),
+            1.0,
+            1e-15
+        ));
+        assert!(close(
+            ring_lorentzian(lam0 + 0.5 * fwhm, lam0, fwhm).unwrap(),
             0.5,
             1e-9
         ));
-        assert!(close(ring_q(lam0, fwhm), 15500.0, 1.0));
+        assert!(close(ring_q(lam0, fwhm).unwrap(), 15500.0, 1.0));
+    }
+
+    #[test]
+    fn zero_linewidth_and_length_are_rejected() {
+        // These used to return infinity or NaN.
+        assert_eq!(ring_q(1550e-9, 0.0), None);
+        assert_eq!(ring_lorentzian(1550e-9, 1550e-9, 0.0), None);
+        assert_eq!(ring_fsr(4.2, 0.0, wl(1550.0)), None);
+    }
+
+    #[test]
+    fn ring_resonances_rejects_bad_inputs() {
+        let bad =
+            |r: Result<Vec<f64>, CoupledError>| matches!(r, Err(CoupledError::InvalidParameter(_)));
+        assert!(bad(ring_resonances(2.4, 1e-4, 0.0, 1e-6)));
+        assert!(bad(ring_resonances(2.4, 1e-4, 1.6e-6, 1.5e-6)));
+        assert!(bad(ring_resonances(f64::NAN, 1e-4, 1.5e-6, 1.6e-6)));
+        assert!(bad(ring_resonances(2.4, -1.0, 1.5e-6, 1.6e-6)));
+    }
+
+    #[test]
+    fn ring_resonances_refuses_an_enormous_window() {
+        // A 1 am lower bound would need about 1e18 orders.
+        let circ = core::f64::consts::TAU * 50e-6;
+        let r = ring_resonances(2.4, circ, 1e-18, 1560e-9);
+        assert!(
+            matches!(r, Err(CoupledError::TooManyResonances { .. })),
+            "{r:?}"
+        );
     }
 }
 

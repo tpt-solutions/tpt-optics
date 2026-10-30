@@ -3,8 +3,8 @@
 //! Triangular P1 (linear) elements on a uniform rectangular mesh over a
 //! rectangle; the eigenproblem `A·x = β²·B·x` (stiffness in the index-
 //! weighted Laplacian vs. mass matrix) is solved for the fundamental mode
-//! by inverse iteration with a shift, using conjugate-gradient solves of
-//! the shifted system.
+//! by Rayleigh-quotient inverse iteration, with dense LU solves of the
+//! shifted system.
 //!
 //! Accuracy: with the default mesh (~30 samples per wavelength-scale width)
 //! the fundamental β agrees with the effective index method to ~1 % for
@@ -16,6 +16,8 @@ use alloc::vec::Vec;
 
 use libm::sqrt;
 use tpt_optics_core::Wavelength;
+
+use crate::dense::{mat_vec, LuFactor};
 
 /// Rectangular computation domain with a uniform triangular mesh.
 #[derive(Copy, Clone, Debug)]
@@ -60,7 +62,8 @@ pub type IndexFn<'a> = dyn Fn(f64, f64) -> f64 + Sync + 'a;
 /// Fundamental (largest β²) mode of the scalar Helmholtz eigenproblem on
 /// the domain with Dirichlet-type (large-detuning) boundary handling.
 ///
-/// Returns `(beta, field)` with the field normalized to unit maximum.
+/// Returns `(beta, field)`. The field is scaled so that its entry of largest
+/// magnitude is +1.
 ///
 /// * `sigma` — shift for inverse iteration, ≈ (k0·n_avg)² (use the
 ///   provided default from [`fundamental_shift`]).
@@ -162,7 +165,7 @@ pub fn fem_fundamental_mode(
         }
     }
     for it in 0..iterations {
-        let mut rhs = mat_vec(&b, &x, n);
+        let mut rhs = mat_vec(&b, n, &x);
         for i in 0..n {
             if boundary[i] {
                 rhs[i] = 0.0;
@@ -178,10 +181,10 @@ pub fn fem_fundamental_mode(
             }
             m
         };
-        let Some(next) = lu_solve(&s_mat, &rhs, n) else {
+        let Some(lu) = LuFactor::new(s_mat, n) else {
             break;
         };
-        x = next;
+        x = lu.solve(&rhs);
         let norm = sqrt(x.iter().map(|v| v * v).sum());
         if norm <= 0.0 || !norm.is_finite() {
             break;
@@ -190,8 +193,8 @@ pub fn fem_fundamental_mode(
             *v /= norm;
         }
         // Update σ from the Rayleigh quotient of the original problem.
-        let at = mat_vec(&a, &x, n);
-        let bt = mat_vec(&b, &x, n);
+        let at = mat_vec(&a, n, &x);
+        let bt = mat_vec(&b, n, &x);
         let num: f64 = x.iter().zip(at.iter()).map(|(v, w)| v * w).sum();
         let den: f64 = x.iter().zip(bt.iter()).map(|(v, w)| v * w).sum();
         // Pure inverse iteration first (amplifies the eigenpair nearest σ),
@@ -201,22 +204,34 @@ pub fn fem_fundamental_mode(
         }
     }
     // β² from the final Rayleigh quotient.
-    let at = mat_vec(&a, &x, n);
-    let bt = mat_vec(&b, &x, n);
+    let at = mat_vec(&a, n, &x);
+    let bt = mat_vec(&b, n, &x);
     let num: f64 = x.iter().zip(at.iter()).map(|(v, w)| v * w).sum();
     let den: f64 = x.iter().zip(bt.iter()).map(|(v, w)| v * w).sum();
     let lambda = if den > 0.0 { num / den } else { 0.0 };
 
     // β² = λ → guide β.
     let beta = sqrt(lambda.max(0.0));
-    // Normalize the field to unit max.
-    let max = x.iter().copied().fold(0.0_f64, f64::max);
-    if max > 0.0 {
-        for v in &mut x {
-            *v /= max;
+    normalise_field(&mut x);
+    (beta, x)
+}
+
+/// Fixes the sign of an eigenvector and scales it to unit peak amplitude.
+///
+/// The peak is the entry of largest magnitude, which may be negative. Dividing
+/// by it both removes the arbitrary sign of inverse iteration and sets the
+/// magnitude to one. Dividing by the signed maximum instead would leave an
+/// all-negative field unscaled.
+fn normalise_field(x: &mut [f64]) {
+    let peak = x.iter().copied().fold(
+        0.0_f64,
+        |m, v| if libm::fabs(v) > libm::fabs(m) { v } else { m },
+    );
+    if peak != 0.0 && peak.is_finite() {
+        for v in x.iter_mut() {
+            *v /= peak;
         }
     }
-    (beta, x)
 }
 
 /// Suggested inverse-iteration shift: (k0·n_clad)² — below every guided
@@ -232,64 +247,6 @@ pub fn fundamental_shift(domain: &RectDomain, index: &IndexFn<'_>, wl: Wavelengt
     }
     let k0 = wl.wavenumber();
     (k0 * n_min) * (k0 * n_min) * 0.999
-}
-
-fn mat_vec(a: &[f64], x: &[f64], n: usize) -> Vec<f64> {
-    (0..n)
-        .map(|i| {
-            a[i * n..(i + 1) * n]
-                .iter()
-                .zip(x.iter())
-                .map(|(m, v)| m * v)
-                .sum()
-        })
-        .collect()
-}
-
-/// Dense LU solve with partial pivoting (Doolittle). Returns `None` for a
-/// singular matrix.
-fn lu_solve(a_in: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
-    let mut a = a_in.to_vec();
-    let mut b = b.to_vec();
-    for col in 0..n {
-        // Pivot.
-        let (mut piv, mut prow) = (a[col * n + col].abs(), col);
-        for r in (col + 1)..n {
-            let v = a[r * n + col].abs();
-            if v > piv {
-                piv = v;
-                prow = r;
-            }
-        }
-        if piv < 1e-300 {
-            return None;
-        }
-        if prow != col {
-            for k in 0..n {
-                a.swap(col * n + k, prow * n + k);
-            }
-            b.swap(col, prow);
-        }
-        let pivot = a[col * n + col];
-        for r in (col + 1)..n {
-            let factor = a[r * n + col] / pivot;
-            a[r * n + col] = 0.0;
-            for k in (col + 1)..n {
-                a[r * n + k] -= factor * a[col * n + k];
-            }
-            b[r] -= factor * b[col];
-        }
-    }
-    // Back substitution.
-    let mut x = alloc::vec![0.0; n];
-    for r in (0..n).rev() {
-        let mut sum = b[r];
-        for k in (r + 1)..n {
-            sum -= a[r * n + k] * x[k];
-        }
-        x[r] = sum / a[r * n + r];
-    }
-    Some(x)
 }
 
 #[cfg(test)]
@@ -348,6 +305,26 @@ mod tests {
         // And decaying into the cladding.
         let edge = field[(domain.nx / 2) * (domain.ny + 1) + 4];
         assert!(edge < 0.3, "cladding amplitude {edge}");
+    }
+
+    #[test]
+    fn normalised_field_peak_is_positive_unit() {
+        // Inverse iteration fixes the eigenvector only up to sign, so a field
+        // whose entries are all negative must still come out with a +1 peak.
+        let mut x = vec![-0.2, -1.0, -0.5];
+        normalise_field(&mut x);
+        assert!(
+            close(x[0], 0.2, 1e-12) && close(x[1], 1.0, 1e-12) && close(x[2], 0.5, 1e-12),
+            "{x:?}"
+        );
+    }
+
+    #[test]
+    fn normalised_field_uses_largest_magnitude_entry() {
+        // The positive entry is smaller in magnitude, so it must not set the scale.
+        let mut x = vec![0.3, -1.0];
+        normalise_field(&mut x);
+        assert!(close(x[0], -0.3, 1e-12) && close(x[1], 1.0, 1e-12), "{x:?}");
     }
 
     #[test]

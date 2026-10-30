@@ -24,6 +24,7 @@
 extern crate alloc;
 
 pub mod coupled;
+mod dense;
 pub mod devices;
 pub mod eigen;
 pub mod eim;
@@ -31,6 +32,7 @@ pub mod fem;
 pub mod fiber;
 pub mod graded;
 pub mod phc;
+pub mod presets;
 pub mod slab;
 pub mod supercell;
 pub mod vector_fem;
@@ -47,3 +49,9 @@ pub mod prelude {
     pub use crate::phc::{bragg_stack_bands, pwem_te_bands};
     pub use crate::slab::{slab_modes, SlabLayer, SlabMode};
 }
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

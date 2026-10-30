@@ -115,17 +115,33 @@ mod tests {
 
     #[test]
     fn narrow_guide_near_cutoff() {
-        // 120 nm wire at 4.5 µm: vertical slab may be below cutoff → None or
-        // n_eff barely above cladding.
+        // 120 nm wire at 4.5 µm. A symmetric slab always has a fundamental
+        // mode when the core is above the cladding, so this must be guided.
+        // Its index is low because the vertical slab is thin relative to the
+        // wavelength. The old test passed whether or not a mode was found.
         let guide = ChannelGuide {
             n_core: 3.48,
             n_clad: 1.444,
             width: 120e-9,
             height: 60e-9,
         };
-        if let Some(neff) = channel_wguide_neff(&guide, wl(4500.0)) {
-            assert!(neff < 1.7, "near-cutoff n_eff should be low: {neff}");
-        }
+        let neff = channel_wguide_neff(&guide, wl(4500.0)).expect("fundamental mode guided");
+        assert!(
+            neff > guide.n_clad && neff < 1.7,
+            "near-cutoff n_eff should be low: {neff}"
+        );
+    }
+
+    #[test]
+    fn no_index_contrast_has_no_guided_mode() {
+        // With n_core = n_clad nothing is guided, so the result is None.
+        let guide = ChannelGuide {
+            n_core: 1.444,
+            n_clad: 1.444,
+            width: 450e-9,
+            height: 220e-9,
+        };
+        assert_eq!(channel_wguide_neff(&guide, wl(1550.0)), None);
     }
 }
 

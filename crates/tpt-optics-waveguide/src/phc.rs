@@ -190,11 +190,12 @@ pub fn jacobi_eigen(a: &mut [f64], w: &mut [f64]) {
         for p in 0..n {
             for q in (p + 1)..n {
                 let apq = a[p * n + q];
-                if apq.abs() < 1e-18 {
+                if libm::fabs(apq) < 1e-18 {
                     continue;
                 }
                 let theta = (a[q * n + q] - a[p * n + p]) / (2.0 * apq);
-                let t = theta.signum() / (theta.abs() + sqrt(theta * theta + 1.0));
+                let t = tpt_optics_core::num::sign(theta)
+                    / (libm::fabs(theta) + sqrt(theta * theta + 1.0));
                 let cos_v = 1.0 / sqrt(t * t + 1.0);
                 let sin_v = t * cos_v;
                 // Apply the rotation J(p,q,θ): A ← Jᵀ A J.

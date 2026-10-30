@@ -165,7 +165,16 @@ fn basis(n_g: usize) -> (Vec<(i32, i32)>, i32) {
 /// * `m` — supercell size in lattice constants (odd),
 /// * `rods` — rod set, typically from [`point_defect_rods`]; background is air,
 /// * `n_g` — plane waves per axis (odd).
-pub fn supercell_te_freqs(m: usize, rods: &[Rod], n_g: usize, k: (f64, f64)) -> Vec<f64> {
+///
+/// Returns an error if the supercell description is invalid (see
+/// [`validate`]).
+pub fn supercell_te_freqs(
+    m: usize,
+    rods: &[Rod],
+    n_g: usize,
+    k: (f64, f64),
+) -> Result<Vec<f64>, SupercellError> {
+    validate(m, rods, n_g)?;
     let (gs, d_max) = basis(n_g);
     let eta = FourierTable::new(m, rods, d_max, 1.0, |rod| 1.0 / rod.epsilon - 1.0);
     let n = gs.len();
@@ -180,7 +189,7 @@ pub fn supercell_te_freqs(m: usize, rods: &[Rod], n_g: usize, k: (f64, f64)) -> 
         }
     }
     let w = symmetric_eigenvalues(&mut h, n);
-    w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect()
+    Ok(w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect())
 }
 
 /// TM (E_z) supercell frequencies at Bloch vector `k`, in units of `c/a`,
@@ -189,7 +198,16 @@ pub fn supercell_te_freqs(m: usize, rods: &[Rod], n_g: usize, k: (f64, f64)) -> 
 /// Solves `A x = λ B x` with `A = diag(|k+G|²)` and `B = ε(G−G′)`. Reducing
 /// with the Cholesky factor `B = L Lᵀ` gives the standard problem
 /// `(L⁻¹ A L⁻ᵀ) y = λ y`.
-pub fn supercell_tm_freqs(m: usize, rods: &[Rod], n_g: usize, k: (f64, f64)) -> Vec<f64> {
+///
+/// Returns an error if the supercell description is invalid, or if `B` is
+/// not positive definite.
+pub fn supercell_tm_freqs(
+    m: usize,
+    rods: &[Rod],
+    n_g: usize,
+    k: (f64, f64),
+) -> Result<Vec<f64>, SupercellError> {
+    validate(m, rods, n_g)?;
     let (gs, d_max) = basis(n_g);
     let eps = FourierTable::new(m, rods, d_max, 1.0, |rod| rod.epsilon - 1.0);
     let n = gs.len();
@@ -208,7 +226,7 @@ pub fn supercell_tm_freqs(m: usize, rods: &[Rod], n_g: usize, k: (f64, f64)) -> 
             b[i * n + j] = eps.get(gxi - gxj, gyi - gyj);
         }
     }
-    let lower_inv = cholesky_lower_inverse(&b, n);
+    let lower_inv = cholesky_lower_inverse(&b, n)?;
     // C = X·A·Xᵀ with X = L⁻¹ lower triangular.
     let mut c = vec![0.0; n * n];
     for i in 0..n {
@@ -222,20 +240,25 @@ pub fn supercell_tm_freqs(m: usize, rods: &[Rod], n_g: usize, k: (f64, f64)) -> 
         }
     }
     let w = symmetric_eigenvalues(&mut c, n);
-    w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect()
+    Ok(w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect())
 }
 
-/// Cholesky factor `L` of the symmetric positive-definite `b` (row-major,
-/// overwritten), returned as its inverse `X = L⁻¹` (lower triangular, dense
-/// storage).
-fn cholesky_lower_inverse(b: &[f64], n: usize) -> Vec<f64> {
+/// Cholesky factor `L` of the symmetric positive-definite `b` (row-major),
+/// returned as its inverse `X = L⁻¹` (lower triangular, dense storage).
+///
+/// A non-positive pivot means `b` is not positive definite. That is reported
+/// as an error instead of being clamped to a tiny positive value.
+fn cholesky_lower_inverse(b: &[f64], n: usize) -> Result<Vec<f64>, SupercellError> {
     let mut l = vec![0.0; n * n];
     for j in 0..n {
         let mut s = b[j * n + j];
         for k in 0..j {
             s -= l[j * n + k] * l[j * n + k];
         }
-        let d = sqrt(s.max(f64::MIN_POSITIVE));
+        if !(s > 0.0 && s.is_finite()) {
+            return Err(SupercellError::NotPositiveDefinite);
+        }
+        let d = sqrt(s);
         l[j * n + j] = d;
         for i in (j + 1)..n {
             let mut t = b[i * n + j];
@@ -257,8 +280,85 @@ fn cholesky_lower_inverse(b: &[f64], n: usize) -> Vec<f64> {
             x[i * n + col] = -s / l[i * n + i];
         }
     }
-    x
+    Ok(x)
 }
+
+/// Errors from the supercell sampling helpers.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SupercellError {
+    /// An argument is out of range or not finite. The message names it.
+    InvalidParameter(&'static str),
+    /// The eigensolver returned a non-finite frequency. Such values are never
+    /// dropped silently, because that would hide a broken spectrum.
+    NonFiniteFrequency,
+    /// The permittivity matrix lost positive-definiteness in the Cholesky
+    /// factorisation. The problem is then not a valid generalised eigenproblem.
+    NotPositiveDefinite,
+}
+
+impl core::fmt::Display for SupercellError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidParameter(msg) => write!(f, "invalid supercell parameter: {msg}"),
+            Self::NonFiniteFrequency => {
+                write!(f, "supercell eigensolver gave a non-finite frequency")
+            }
+            Self::NotPositiveDefinite => write!(
+                f,
+                "permittivity matrix is not positive definite (check rod epsilon and overlap)"
+            ),
+        }
+    }
+}
+
+/// Checks the supercell description before any eigenproblem is built.
+///
+/// Requires an odd `M` and odd `n_g`. Rods must have finite, non-negative
+/// radii and positive finite permittivities, lie inside the cell, and not
+/// overlap. The rod set must be inversion-symmetric, since the Fourier
+/// coefficients are only real for such a set.
+fn validate(m: usize, rods: &[Rod], n_g: usize) -> Result<(), SupercellError> {
+    let bad = SupercellError::InvalidParameter;
+    if m == 0 || m % 2 == 0 {
+        return Err(bad("supercell size m must be odd and at least 1"));
+    }
+    if n_g == 0 || n_g % 2 == 0 {
+        return Err(bad("plane-wave count n_g must be odd and at least 1"));
+    }
+    let h = ((m - 1) / 2) as i32;
+    for r in rods {
+        if !(r.radius.is_finite() && r.radius >= 0.0) {
+            return Err(bad("rod radius must be finite and non-negative"));
+        }
+        if !(r.epsilon.is_finite() && r.epsilon > 0.0) {
+            return Err(bad("rod permittivity must be finite and positive"));
+        }
+        if r.x.abs() > h || r.y.abs() > h {
+            return Err(bad("rod lies outside the supercell"));
+        }
+    }
+    for (i, a) in rods.iter().enumerate() {
+        let mirrored = rods
+            .iter()
+            .any(|b| b.x == -a.x && b.y == -a.y && b.radius == a.radius && b.epsilon == a.epsilon);
+        if !mirrored {
+            return Err(bad("rod set must be inversion-symmetric"));
+        }
+        for b in &rods[i + 1..] {
+            if a.x == b.x && a.y == b.y {
+                return Err(bad("two rods share a cell"));
+            }
+            let dx = (a.x - b.x) as f64;
+            let dy = (a.y - b.y) as f64;
+            if a.radius + b.radius > sqrt(dx * dx + dy * dy) {
+                return Err(bad("rods overlap"));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl core::error::Error for SupercellError {}
 
 /// Widest frequency window inside `window = (f_lo, f_hi)` that contains no
 /// bulk state of the uniform crystal, found by sampling the supercell
@@ -268,7 +368,10 @@ fn cholesky_lower_inverse(b: &[f64], n: usize) -> Vec<f64> {
 /// report a gap that is too wide, and the result also depends on the
 /// plane-wave cutoff. Check it with a denser `n_k` and a larger `n_g` before
 /// relying on it. `tm` selects E-polarisation (`true`) or H-polarisation.
-/// Returns `(lower, upper)` in units of `c/a`.
+///
+/// Returns `Ok(None)` when no gap exists inside the window, and
+/// `Ok(Some((lower, upper)))` in units of `c/a` otherwise. `n_k` must be at
+/// least 1, and the window must be finite with `f_lo < f_hi`.
 pub fn bulk_gap_from_supercell(
     m: usize,
     epsilon: f64,
@@ -277,8 +380,16 @@ pub fn bulk_gap_from_supercell(
     n_k: usize,
     window: (f64, f64),
     tm: bool,
-) -> Option<(f64, f64)> {
+) -> Result<Option<(f64, f64)>, SupercellError> {
     let (f_lo, f_hi) = window;
+    if n_k == 0 {
+        return Err(SupercellError::InvalidParameter("n_k must be >= 1"));
+    }
+    if !(f_lo.is_finite() && f_hi.is_finite() && f_lo < f_hi) {
+        return Err(SupercellError::InvalidParameter(
+            "window must be finite with f_lo < f_hi",
+        ));
+    }
     let rods = point_defect_rods(m, epsilon, r_over_a, epsilon, r_over_a);
     let kmax = PI / m as f64;
     let mut all: Vec<f64> = Vec::new();
@@ -286,11 +397,18 @@ pub fn bulk_gap_from_supercell(
         for j in 0..=n_k {
             let k = (kmax * i as f64 / n_k as f64, kmax * j as f64 / n_k as f64);
             let freqs = if tm {
-                supercell_tm_freqs(m, &rods, n_g, k)
+                supercell_tm_freqs(m, &rods, n_g, k)?
             } else {
-                supercell_te_freqs(m, &rods, n_g, k)
+                supercell_te_freqs(m, &rods, n_g, k)?
             };
-            all.extend(freqs.into_iter().filter(|f| *f >= f_lo && *f <= f_hi));
+            for f in freqs {
+                if !f.is_finite() {
+                    return Err(SupercellError::NonFiniteFrequency);
+                }
+                if f >= f_lo && f <= f_hi {
+                    all.push(f);
+                }
+            }
         }
     }
     all.sort_by(f64::total_cmp);
@@ -302,7 +420,7 @@ pub fn bulk_gap_from_supercell(
         }
         prev = f;
     }
-    best.filter(|(lo, hi)| hi > lo)
+    Ok(best.filter(|(lo, hi)| hi > lo))
 }
 
 #[cfg(test)]
@@ -315,7 +433,7 @@ mod tests {
         let m = 3;
         let rods = point_defect_rods(m, 1.0, 0.0, 1.0, 0.0);
         for solve in [supercell_te_freqs, supercell_tm_freqs] {
-            let f = solve(m, &rods, 7, (0.0, 0.0));
+            let f = solve(m, &rods, 7, (0.0, 0.0)).unwrap();
             assert!(f[0].abs() < 1e-9, "{f:?}");
             for &v in &f[1..5] {
                 assert!((v - 1.0 / m as f64).abs() < 1e-6, "{f:?}");
@@ -330,8 +448,8 @@ mod tests {
         let (eps, r) = (11.56, 0.2);
         let uniform = point_defect_rods(5, eps, r, eps, r);
         let missing = point_defect_rods(5, eps, r, 1.0, 0.0);
-        let fu = supercell_tm_freqs(5, &uniform, 5, (0.0, 0.0));
-        let fm = supercell_tm_freqs(5, &missing, 5, (0.0, 0.0));
+        let fu = supercell_tm_freqs(5, &uniform, 5, (0.0, 0.0)).unwrap();
+        let fm = supercell_tm_freqs(5, &missing, 5, (0.0, 0.0)).unwrap();
         let diff: f64 = fu.iter().zip(&fm).map(|(a, b)| (a - b).abs()).sum();
         assert!(diff > 1e-3, "defect had no effect: {diff}");
     }
@@ -340,7 +458,7 @@ mod tests {
     fn empty_single_cell_tm_gives_unit_lightline() {
         // M = 1, ε = 1: the first nonzero level at Γ is |G|/2π = 1 (c/a).
         let rods = point_defect_rods(1, 1.0, 0.0, 1.0, 0.0);
-        let f = supercell_tm_freqs(1, &rods, 5, (0.0, 0.0));
+        let f = supercell_tm_freqs(1, &rods, 5, (0.0, 0.0)).unwrap();
         assert!(f[0].abs() < 1e-9 && (f[1] - 1.0).abs() < 1e-9, "{f:?}");
     }
 
@@ -360,13 +478,155 @@ mod tests {
                 .filter(|v| (0.36..0.42).contains(v))
                 .collect()
         };
-        let bulk = window(&supercell_tm_freqs(m, &uniform, ng, (0.0, 0.0)));
-        let defect = window(&supercell_tm_freqs(m, &missing, ng, (0.0, 0.0)));
+        let bulk = window(&supercell_tm_freqs(m, &uniform, ng, (0.0, 0.0)).unwrap());
+        let defect = window(&supercell_tm_freqs(m, &missing, ng, (0.0, 0.0)).unwrap());
         assert!(
             bulk.is_empty(),
             "uniform crystal has levels in gap: {bulk:?}"
         );
         assert_eq!(defect.len(), 1, "expected one defect level: {defect:?}");
         assert!((defect[0] - 0.393).abs() < 0.01, "defect at {}", defect[0]);
+    }
+
+    fn is_invalid(r: &Result<Vec<f64>, SupercellError>) -> bool {
+        matches!(r, Err(SupercellError::InvalidParameter(_)))
+    }
+
+    #[test]
+    fn even_supercell_size_is_rejected() {
+        // An even M has no centre cell, so the defect cannot sit at the middle.
+        let rods = point_defect_rods(3, 8.9, 0.2, 8.9, 0.2);
+        assert!(is_invalid(&supercell_tm_freqs(4, &rods, 5, (0.0, 0.0))));
+        assert!(is_invalid(&supercell_te_freqs(0, &rods, 5, (0.0, 0.0))));
+    }
+
+    #[test]
+    fn even_plane_wave_count_is_rejected() {
+        let rods = point_defect_rods(3, 8.9, 0.2, 8.9, 0.2);
+        assert!(is_invalid(&supercell_tm_freqs(3, &rods, 6, (0.0, 0.0))));
+    }
+
+    #[test]
+    fn overlapping_rods_are_rejected() {
+        // Two rods of radius 0.6a whose centres are a apart overlap.
+        let rods = [
+            Rod {
+                x: 0,
+                y: 0,
+                radius: 0.6,
+                epsilon: 8.9,
+            },
+            Rod {
+                x: 1,
+                y: 0,
+                radius: 0.6,
+                epsilon: 8.9,
+            },
+            Rod {
+                x: -1,
+                y: 0,
+                radius: 0.6,
+                epsilon: 8.9,
+            },
+        ];
+        assert!(is_invalid(&supercell_tm_freqs(3, &rods, 5, (0.0, 0.0))));
+    }
+
+    #[test]
+    fn asymmetric_rod_set_is_rejected() {
+        // The Fourier formulation assumes inversion symmetry. Without it the
+        // coefficients are complex and the code would silently drop them.
+        let rods = [
+            Rod {
+                x: 1,
+                y: 0,
+                radius: 0.2,
+                epsilon: 8.9,
+            },
+            Rod {
+                x: 0,
+                y: 0,
+                radius: 0.0,
+                epsilon: 1.0,
+            },
+        ];
+        assert!(is_invalid(&supercell_tm_freqs(3, &rods, 5, (0.0, 0.0))));
+    }
+
+    #[test]
+    fn non_physical_rod_values_are_rejected() {
+        for (radius, eps) in [
+            (0.2, f64::NAN),
+            (0.2, 0.0),
+            (0.2, -4.0),
+            (f64::NAN, 8.9),
+            (-0.1, 8.9),
+        ] {
+            let rods = point_defect_rods(3, eps, radius, eps, radius);
+            assert!(
+                is_invalid(&supercell_tm_freqs(3, &rods, 5, (0.0, 0.0))),
+                "{radius} {eps}"
+            );
+        }
+    }
+
+    #[test]
+    fn rod_outside_the_supercell_is_rejected() {
+        let rods = [
+            Rod {
+                x: 2,
+                y: 0,
+                radius: 0.2,
+                epsilon: 8.9,
+            },
+            Rod {
+                x: -2,
+                y: 0,
+                radius: 0.2,
+                epsilon: 8.9,
+            },
+        ];
+        assert!(is_invalid(&supercell_tm_freqs(3, &rods, 5, (0.0, 0.0))));
+    }
+
+    #[test]
+    fn bulk_gap_rejects_zero_k_grid() {
+        // With n_k = 0 the sampling grid has only Γ, which used to be reported
+        // as a full-window gap. It must be an error instead.
+        let r = bulk_gap_from_supercell(5, 8.9, 0.2, 9, 0, (0.3, 0.5), true);
+        assert_eq!(r, Err(SupercellError::InvalidParameter("n_k must be >= 1")));
+    }
+
+    #[test]
+    fn bulk_gap_rejects_non_finite_window() {
+        let r = bulk_gap_from_supercell(5, 8.9, 0.2, 9, 2, (f64::NAN, 0.5), true);
+        assert!(
+            matches!(r, Err(SupercellError::InvalidParameter(_))),
+            "{r:?}"
+        );
+        let r = bulk_gap_from_supercell(5, 8.9, 0.2, 9, 2, (0.3, f64::INFINITY), true);
+        assert!(
+            matches!(r, Err(SupercellError::InvalidParameter(_))),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn bulk_gap_rejects_inverted_window() {
+        let r = bulk_gap_from_supercell(5, 8.9, 0.2, 9, 2, (0.5, 0.3), true);
+        assert!(
+            matches!(r, Err(SupercellError::InvalidParameter(_))),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn bulk_gap_is_found_for_square_rods() {
+        // The full-zone TM gap is (0.324, 0.447) c/a. A coarse grid must
+        // report a gap that lies inside it, not one that is too wide.
+        let (lo, hi) = bulk_gap_from_supercell(5, 8.9, 0.2, 13, 4, (0.2, 0.6), true)
+            .unwrap()
+            .expect("gap");
+        assert!(lo >= 0.30 && hi <= 0.46 && hi > lo, "({lo}, {hi})");
     }
 }

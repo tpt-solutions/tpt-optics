@@ -29,8 +29,8 @@ use alloc::vec::Vec;
 use libm::sqrt;
 use tpt_optics_core::Wavelength;
 
+use crate::eigen::symmetric_eigenvalues;
 use crate::fiber::LpMode;
-use crate::phc::jacobi_eigen;
 
 /// Radial grid size used by [`graded_lp_modes`].
 pub const DEFAULT_RADIAL_POINTS: usize = 200;
@@ -88,8 +88,8 @@ pub fn graded_lp_modes(
                 k[i * n_radial + j] /= s[i] * s[j];
             }
         }
-        let mut eig = vec![0.0; n_radial];
-        jacobi_eigen(&mut k, &mut eig);
+
+        let eig = symmetric_eigenvalues(&mut k, n_radial);
 
         let mut m = 0_u32;
         for &e in &eig {
