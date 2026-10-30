@@ -10,6 +10,19 @@
 use core::fmt;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+/// Sign of `x` as `+1.0` or `-1.0`; `+0.0` maps to `+1.0`, and NaN maps to NaN.
+///
+/// Same results as `f64::signum`. That method is not in `core` before Rust 1.85,
+/// so this crate's MSRV build needs its own copy.
+#[inline]
+pub fn sign(x: f64) -> f64 {
+    if x.is_nan() {
+        x
+    } else {
+        libm::copysign(1.0, x)
+    }
+}
+
 /// A field-like scalar with the transcendental functions optics needs.
 ///
 /// Implemented by `f64` and by [`crate::dual::Dual`] (forward-mode AD).
@@ -92,7 +105,7 @@ impl Scalar for f64 {
 
     #[inline]
     fn abs(self) -> Self {
-        f64::abs(self)
+        libm::fabs(self)
     }
 
     #[inline]

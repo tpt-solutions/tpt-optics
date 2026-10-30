@@ -179,8 +179,8 @@ impl Scalar for Dual {
     #[inline]
     fn abs(self) -> Self {
         Dual {
-            v: self.v.abs(),
-            d: self.d * self.v.signum(),
+            v: libm::fabs(self.v),
+            d: self.d * crate::num::sign(self.v),
         }
     }
 

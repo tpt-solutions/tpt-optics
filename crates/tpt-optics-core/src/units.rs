@@ -348,3 +348,202 @@ mod tests {
         assert!((wl.in_medium(1.5).nm() - 400.0).abs() < 1e-9);
     }
 }
+
+/// Geometric length, stored in meters. `Display` picks a scale that keeps
+/// the number readable: metres, millimetres, micrometres or nanometres.
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub struct Length(f64);
+
+impl Length {
+    /// From metres.
+    #[inline]
+    pub const fn from_m(m: f64) -> Self {
+        Length(m)
+    }
+
+    /// From millimetres.
+    #[inline]
+    pub fn from_mm(mm: f64) -> Self {
+        Length(mm * 1e-3)
+    }
+
+    /// From micrometres.
+    #[inline]
+    pub fn from_um(um: f64) -> Self {
+        Length(um * 1e-6)
+    }
+
+    /// From nanometres.
+    #[inline]
+    pub fn from_nm(nm: f64) -> Self {
+        Length(nm * 1e-9)
+    }
+
+    /// In metres.
+    #[inline]
+    pub const fn m(self) -> f64 {
+        self.0
+    }
+
+    /// In millimetres.
+    #[inline]
+    pub fn mm(self) -> f64 {
+        self.0 * 1e3
+    }
+
+    /// In micrometres.
+    #[inline]
+    pub fn um(self) -> f64 {
+        self.0 * 1e6
+    }
+
+    /// In nanometres.
+    #[inline]
+    pub fn nm(self) -> f64 {
+        self.0 * 1e9
+    }
+}
+
+impl fmt::Display for Length {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let a = libm::fabs(self.0);
+        if a == 0.0 || a >= 1.0 {
+            write!(f, "{} m", self.0)
+        } else if a >= 1e-3 {
+            write!(f, "{} mm", self.mm())
+        } else if a >= 1e-6 {
+            write!(f, "{} µm", self.um())
+        } else {
+            write!(f, "{} nm", self.nm())
+        }
+    }
+}
+
+/// Surface curvature `c = 1/R`, stored in inverse metres. A radius of zero
+/// is a flat surface, which has zero curvature.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Curvature(f64);
+
+impl Curvature {
+    /// From a curvature in inverse metres.
+    #[inline]
+    pub const fn from_inverse_m(c: f64) -> Self {
+        Curvature(c)
+    }
+
+    /// From a radius of curvature in millimetres. Zero gives a flat surface.
+    #[inline]
+    pub fn from_radius_mm(r: f64) -> Self {
+        if r == 0.0 {
+            Curvature(0.0)
+        } else {
+            Curvature(1e3 / r)
+        }
+    }
+
+    /// In inverse metres.
+    #[inline]
+    pub const fn inverse_m(self) -> f64 {
+        self.0
+    }
+
+    /// Radius of curvature in millimetres, or `None` for a flat surface.
+    #[inline]
+    pub fn radius_mm(self) -> Option<f64> {
+        if self.0 == 0.0 {
+            None
+        } else {
+            Some(1e3 / self.0)
+        }
+    }
+}
+
+impl fmt::Display for Curvature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.radius_mm() {
+            Some(r) => write!(f, "R = {r} mm"),
+            None => write!(f, "flat"),
+        }
+    }
+}
+
+/// Optical power in dioptres (inverse metres), `P = 1/f`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Power(f64);
+
+impl Power {
+    /// From dioptres (1/m).
+    #[inline]
+    pub const fn from_dioptres(d: f64) -> Self {
+        Power(d)
+    }
+
+    /// From a focal length in millimetres. Infinite focal length is zero power.
+    #[inline]
+    pub fn from_focal_length_mm(f: f64) -> Self {
+        if f.is_infinite() {
+            Power(0.0)
+        } else {
+            Power(1e3 / f)
+        }
+    }
+
+    /// In dioptres.
+    #[inline]
+    pub const fn dioptres(self) -> f64 {
+        self.0
+    }
+
+    /// Focal length in millimetres, or `None` for zero power.
+    #[inline]
+    pub fn focal_length_mm(self) -> Option<f64> {
+        if self.0 == 0.0 {
+            None
+        } else {
+            Some(1e3 / self.0)
+        }
+    }
+}
+
+impl fmt::Display for Power {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} D", self.0)
+    }
+}
+
+#[cfg(test)]
+mod quantity_tests {
+    use super::*;
+
+    #[test]
+    fn length_converts_between_scales() {
+        assert!((Length::from_mm(12.5).m() - 12.5e-3).abs() < 1e-15);
+        assert!((Length::from_um(0.5).nm() - 500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn length_display_picks_a_readable_scale() {
+        assert_eq!(alloc::format!("{}", Length::from_mm(12.5)), "12.5 mm");
+        assert_eq!(alloc::format!("{}", Length::from_nm(632.8)), "632.8 nm");
+        assert_eq!(alloc::format!("{}", Length::from_um(2.0)), "2 µm");
+        assert_eq!(alloc::format!("{}", Length::from_m(1.5)), "1.5 m");
+    }
+
+    #[test]
+    fn curvature_round_trips_through_radius() {
+        let c = Curvature::from_radius_mm(100.0);
+        assert!((c.inverse_m() - 10.0).abs() < 1e-12);
+        assert!((c.radius_mm().unwrap() - 100.0).abs() < 1e-12);
+        assert_eq!(Curvature::from_radius_mm(0.0).radius_mm(), None);
+    }
+
+    #[test]
+    fn power_is_reciprocal_focal_length() {
+        let p = Power::from_focal_length_mm(100.0);
+        assert!((p.dioptres() - 10.0).abs() < 1e-12);
+        assert_eq!(
+            Power::from_focal_length_mm(f64::INFINITY).focal_length_mm(),
+            None
+        );
+    }
+}

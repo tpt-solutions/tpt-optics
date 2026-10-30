@@ -212,6 +212,51 @@ impl Dispersion for DrudeLorentz {
     }
 }
 
+/// Why a table of dispersion data was rejected.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TableError {
+    /// The table has fewer than two points, so there is nothing to interpolate.
+    TooFewPoints,
+    /// Two points share a wavelength, so the interpolant is undefined there.
+    DuplicateWavelength,
+    /// A wavelength, `n` or `k` is NaN or infinite.
+    NonFinite,
+}
+
+impl core::fmt::Display for TableError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TooFewPoints => write!(f, "a dispersion table needs at least two points"),
+            Self::DuplicateWavelength => write!(f, "two table points share a wavelength"),
+            Self::NonFinite => write!(f, "a table point has a non-finite wavelength, n or k"),
+        }
+    }
+}
+
+impl core::error::Error for TableError {}
+
+/// Validates table points and returns them sorted by wavelength.
+fn sorted_points(points: &[TablePoint]) -> Result<Vec<TablePoint>, TableError> {
+    if points.len() < 2 {
+        return Err(TableError::TooFewPoints);
+    }
+    if points
+        .iter()
+        .any(|p| !(p.wavelength_m.is_finite() && p.n.is_finite() && p.k.is_finite()))
+    {
+        return Err(TableError::NonFinite);
+    }
+    let mut points = points.to_vec();
+    points.sort_by(|a, b| a.wavelength_m.total_cmp(&b.wavelength_m));
+    if points
+        .windows(2)
+        .any(|w| w[0].wavelength_m == w[1].wavelength_m)
+    {
+        return Err(TableError::DuplicateWavelength);
+    }
+    Ok(points)
+}
+
 /// One tabulated point: (vacuum wavelength in m, n, k).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TablePoint {
@@ -236,8 +281,8 @@ pub struct Tabulated {
 }
 
 impl Tabulated {
-    /// Construct from (λ in m, n) pairs, k = 0.
-    pub fn from_nm_pairs(pairs: &[(f64, f64)]) -> Self {
+    /// Construct from (λ in nm, n) pairs, k = 0.
+    pub fn from_nm_pairs(pairs: &[(f64, f64)]) -> Result<Self, TableError> {
         Self::from_points(
             &pairs
                 .iter()
@@ -251,18 +296,19 @@ impl Tabulated {
     }
 
     /// Construct from explicit points (λ in meters). Sorted internally.
-    pub fn from_points(points: &[TablePoint]) -> Self {
-        assert!(!points.is_empty(), "tabulated dispersion needs data points");
-        let mut points = points.to_vec();
-        points.sort_by(|a, b| a.wavelength_m.total_cmp(&b.wavelength_m));
+    ///
+    /// Returns an error for fewer than two points, duplicate wavelengths, or
+    /// non-finite values.
+    pub fn from_points(points: &[TablePoint]) -> Result<Self, TableError> {
+        let points = sorted_points(points)?;
         let xs: Vec<f64> = points.iter().map(|p| p.wavelength_m).collect();
         let n_splines = natural_cubic(&xs, &points.iter().map(|p| p.n).collect::<Vec<_>>());
         let k_splines = natural_cubic(&xs, &points.iter().map(|p| p.k).collect::<Vec<_>>());
-        Tabulated {
+        Ok(Tabulated {
             points,
             n_splines,
             k_splines,
-        }
+        })
     }
 
     /// Evaluate one set of spline coefficients at wavelength `x`,
@@ -318,16 +364,16 @@ pub struct TabulatedLinear {
 }
 
 impl TabulatedLinear {
-    /// Construct from points (λ in meters). Sorted internally.
-    pub fn from_points(points: &[TablePoint]) -> Self {
-        assert!(!points.is_empty(), "tabulated dispersion needs data points");
-        let mut points = points.to_vec();
-        points.sort_by(|a, b| a.wavelength_m.total_cmp(&b.wavelength_m));
-        TabulatedLinear { points }
+    /// Construct from points (λ in meters). Sorted internally. The same
+    /// checks as [`Tabulated::from_points`] apply.
+    pub fn from_points(points: &[TablePoint]) -> Result<Self, TableError> {
+        Ok(TabulatedLinear {
+            points: sorted_points(points)?,
+        })
     }
 
     /// Construct from (λ nm, n) pairs with k = 0.
-    pub fn from_nm_pairs(pairs: &[(f64, f64)]) -> Self {
+    pub fn from_nm_pairs(pairs: &[(f64, f64)]) -> Result<Self, TableError> {
         Self::from_points(
             &pairs
                 .iter()
@@ -375,7 +421,7 @@ impl Dispersion for TabulatedLinear {
 /// `t = (x − xᵢ)/(xᵢ₊₁ − xᵢ)`.
 pub(crate) fn natural_cubic(xs: &[f64], ys: &[f64]) -> Vec<[f64; 4]> {
     let n = xs.len();
-    debug_assert!(n >= 2);
+    assert!(n >= 2, "natural_cubic needs at least two knots");
     if n == 2 {
         // Linear fallback.
         let slope = (ys[1] - ys[0]) / (xs[1] - xs[0]);
@@ -515,7 +561,7 @@ mod tests {
                 )
             })
             .collect();
-        let t = Tabulated::from_nm_pairs(&pairs);
+        let t = Tabulated::from_nm_pairs(&pairs).unwrap();
         let mid = t.real_index(Wavelength::from_nm(45.5));
         let expect = libm::sin(45.5 * core::f64::consts::PI / 180.0);
         assert!((mid - expect).abs() < 1e-6, "got {mid}, want {expect}");
@@ -526,10 +572,59 @@ mod tests {
 
     #[test]
     fn tabulated_linear_clamps() {
-        let t = TabulatedLinear::from_nm_pairs(&[(400.0, 1.5), (800.0, 1.6)]);
+        let t = TabulatedLinear::from_nm_pairs(&[(400.0, 1.5), (800.0, 1.6)]).unwrap();
         assert!((t.real_index(wl_nm(400.0)) - 1.5).abs() < 1e-12);
         assert!((t.real_index(wl_nm(600.0)) - 1.55).abs() < 1e-12);
         assert!((t.real_index(wl_nm(1000.0)) - 1.6).abs() < 1e-12);
         assert!((t.real_index(wl_nm(100.0)) - 1.5).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod table_validation_tests {
+    use super::*;
+
+    fn pt(nm: f64, n: f64) -> TablePoint {
+        TablePoint {
+            wavelength_m: nm * 1e-9,
+            n,
+            k: 0.0,
+        }
+    }
+
+    #[test]
+    fn tables_need_two_points() {
+        // Empty and single-point tables used to panic or index out of range.
+        assert_eq!(Tabulated::from_points(&[]), Err(TableError::TooFewPoints));
+        assert_eq!(
+            TabulatedLinear::from_points(&[pt(500.0, 1.5)]),
+            Err(TableError::TooFewPoints)
+        );
+    }
+
+    #[test]
+    fn duplicate_wavelengths_are_rejected() {
+        let pts = [pt(500.0, 1.5), pt(500.0, 1.6), pt(600.0, 1.4)];
+        assert_eq!(
+            Tabulated::from_points(&pts),
+            Err(TableError::DuplicateWavelength)
+        );
+        assert_eq!(
+            TabulatedLinear::from_points(&pts),
+            Err(TableError::DuplicateWavelength)
+        );
+    }
+
+    #[test]
+    fn non_finite_values_are_rejected() {
+        let pts = [pt(500.0, f64::NAN), pt(600.0, 1.4)];
+        assert_eq!(Tabulated::from_points(&pts), Err(TableError::NonFinite));
+    }
+
+    #[test]
+    fn valid_table_still_interpolates() {
+        let t = Tabulated::from_nm_pairs(&[(400.0, 1.6), (600.0, 1.5), (800.0, 1.45)]).unwrap();
+        let n = t.real_index(Wavelength::from_nm(500.0));
+        assert!(n > 1.5 && n < 1.6, "{n}");
     }
 }

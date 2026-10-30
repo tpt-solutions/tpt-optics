@@ -1,7 +1,8 @@
 //! Materials and the material database.
 
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -20,6 +21,7 @@ pub struct Material {
     dispersion: Box<dyn Dispersion>,
     dn_dtemp: f64,
     reference_temp: Kelvin,
+    validity_nm: Option<(f64, f64)>,
 }
 
 impl Material {
@@ -35,7 +37,53 @@ impl Material {
             dispersion,
             dn_dtemp,
             reference_temp,
+            validity_nm: None,
         }
+    }
+
+    /// Declare the wavelength range (nm) over which the dispersion model was
+    /// fitted. Wavelengths outside it are flagged by
+    /// [`Material::outside_validity`].
+    #[must_use]
+    pub fn with_validity(mut self, lo_nm: f64, hi_nm: f64) -> Self {
+        self.validity_nm = Some((lo_nm, hi_nm));
+        self
+    }
+
+    /// Declared validity range (nm), if any.
+    pub fn validity_nm(&self) -> Option<(f64, f64)> {
+        self.validity_nm
+    }
+
+    /// True when `wl` lies outside the declared validity range. A material
+    /// without a declared range never reports outside.
+    pub fn outside_validity(&self, wl: Wavelength) -> bool {
+        match self.validity_nm {
+            Some((lo, hi)) => {
+                let nm = wl.nm();
+                nm < lo || nm > hi
+            }
+            None => false,
+        }
+    }
+
+    /// Abbe number `V_d = (n_d − 1)/(n_F − n_C)` from the dispersion model.
+    pub fn abbe_number(&self) -> f64 {
+        let t = self.reference_temp;
+        let n = |nm: f64| self.index_at(Wavelength::from_nm(nm), t).n;
+        (n(587.6) - 1.0) / (n(486.1) - n(656.3))
+    }
+
+    /// Six-digit glass code: `nd` as three digits after the point (`n_d =
+    /// 1.517` gives `517`), then `V_d` times ten (`V_d = 64.2` gives `642`).
+    /// The value comes from the dispersion model, so the last digit can differ
+    /// from a vendor code.
+    pub fn glass_code(&self) -> String {
+        let t = self.reference_temp;
+        let nd = self.index_at(Wavelength::from_nm(587.6), t).n;
+        let nd_digits = libm::round((nd - 1.0) * 1000.0) as i64;
+        let vd_digits = libm::round(self.abbe_number() * 10.0) as i64;
+        alloc::format!("{nd_digits:03}{vd_digits:03}")
     }
 
     /// Material name.
@@ -91,13 +139,20 @@ impl Dispersion for ConstIndex {
 /// Dry air at 15 °C, 101.325 kPa via the Edlén equation:
 ///
 /// `(n − 1)·10⁸ = 6432.8 + 2949810/(146 − σ²) + 25540/(41 − σ²)`,
-/// with σ = 1/λ in µm⁻¹. Valid ≈ 0.2–2 µm.
+/// with σ = 1/λ in µm⁻¹. Valid for 0.2–2 µm. Outside that range the index is
+/// NaN.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EdlenAir;
 
 impl Dispersion for EdlenAir {
     fn index(&self, wavelength: Wavelength) -> ComplexRefractiveIndex {
-        let sigma2 = 1.0 / (wavelength.um() * wavelength.um());
+        let um = wavelength.um();
+        // Outside 0.2–2 µm the formula is not valid (it has poles near
+        // 0.156 µm and 0.083 µm), so return NaN rather than a plausible number.
+        if !(0.2..=2.0).contains(&um) {
+            return ComplexRefractiveIndex::real(f64::NAN);
+        }
+        let sigma2 = 1.0 / (um * um);
         let n_minus_1 =
             1e-8 * (6432.8 + 2_949_810.0 / (146.0 - sigma2) + 25_540.0 / (41.0 - sigma2));
         ComplexRefractiveIndex::real(1.0 + n_minus_1)
@@ -110,10 +165,17 @@ impl IndexAt for EdlenAir {
     }
 }
 
+/// Table for a built-in material. The data is fixed in the source, so a
+/// failure here is a bug in this crate and panics.
+fn builtin_table(points: &[TablePoint]) -> Tabulated {
+    Tabulated::from_points(points).expect("built-in dispersion table is valid")
+}
+
 /// A registry of named materials.
 #[derive(Debug, Default)]
 pub struct MaterialDatabase {
-    entries: Vec<(String, Arc<Material>)>,
+    /// Materials keyed by lower-cased name: lookup is logarithmic and ignores case.
+    entries: BTreeMap<String, Arc<Material>>,
 }
 
 impl MaterialDatabase {
@@ -124,17 +186,13 @@ impl MaterialDatabase {
 
     /// Insert (replaces an existing entry with the same name).
     pub fn insert(&mut self, material: Material) {
-        let name = material.name().to_string();
-        self.entries.retain(|(n, _)| n != &name);
-        self.entries.push((name, Arc::new(material)));
+        let key = material.name().to_ascii_lowercase();
+        self.entries.insert(key, Arc::new(material));
     }
 
-    /// Look up by name (case-sensitive).
+    /// Look up by name. Case is ignored, so `"n-bk7"` finds `"N-BK7"`.
     pub fn get(&self, name: &str) -> Option<Arc<Material>> {
-        self.entries
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, m)| Arc::clone(m))
+        self.entries.get(&name.to_ascii_lowercase()).map(Arc::clone)
     }
 
     /// Number of materials.
@@ -147,9 +205,26 @@ impl MaterialDatabase {
         self.entries.is_empty()
     }
 
+    /// Registered name closest to `query`, ignoring case, if it is within
+    /// `max_distance` edits. Use it for "did you mean" messages.
+    pub fn closest_name(&self, query: &str, max_distance: usize) -> Option<&str> {
+        let query = query.to_ascii_lowercase();
+        self.entries
+            .values()
+            .map(|m| {
+                (
+                    edit_distance(&query, &m.name().to_ascii_lowercase()),
+                    m.name(),
+                )
+            })
+            .filter(|(d, _)| *d <= max_distance)
+            .min_by_key(|(d, _)| *d)
+            .map(|(_, name)| name)
+    }
+
     /// Names of all materials, sorted.
     pub fn names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self.entries.iter().map(|(n, _)| n.as_str()).collect();
+        let mut names: Vec<&str> = self.entries.values().map(|m| m.name()).collect();
         names.sort_unstable();
         names
     }
@@ -162,12 +237,15 @@ impl MaterialDatabase {
     pub fn presets() -> Self {
         let mut db = MaterialDatabase::new();
         let mut add = |name: &str, disp: Box<dyn Dispersion>, dn: f64| {
-            db.insert(Material::new(
-                name,
-                disp,
-                dn,
-                crate::units::REFERENCE_TEMPERATURE,
-            ));
+            let material = Material::new(name, disp, dn, crate::units::REFERENCE_TEMPERATURE);
+            let material = match name {
+                // Schott's fit for BK7 covers 0.3–2.5 µm.
+                "bk7" | "n_bk7" => material.with_validity(300.0, 2500.0),
+                // Malitson's fit for fused silica covers 0.21–3.71 µm.
+                "fused_silica" => material.with_validity(210.0, 3710.0),
+                _ => material,
+            };
+            db.insert(material);
         };
 
         add("vacuum", ConstIndex(1.0).boxed(), 0.0);
@@ -181,7 +259,7 @@ impl MaterialDatabase {
         add("n_bk7", Sellmeier::bk7().boxed(), 3.0e-6);
         add(
             "water",
-            Tabulated::from_points(&[
+            builtin_table(&[
                 TablePoint {
                     wavelength_m: 0.30e-6,
                     n: 1.349,
@@ -224,7 +302,7 @@ impl MaterialDatabase {
         add("diamond", Sellmeier::diamond().boxed(), 1.0e-5);
         add(
             "silicon",
-            Tabulated::from_points(&[
+            builtin_table(&[
                 TablePoint {
                     wavelength_m: 1.20e-6,
                     n: 3.528,
@@ -273,6 +351,22 @@ impl MaterialDatabase {
         );
         db
     }
+}
+
+/// Levenshtein distance between two strings, counted in characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = Vec::with_capacity(b.len() + 1);
+        cur.push(i + 1);
+        for (j, cb) in b.iter().enumerate() {
+            let subst = prev[j] + usize::from(ca != *cb);
+            cur.push(subst.min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
 }
 
 #[cfg(test)]
@@ -337,5 +431,92 @@ mod tests {
                 .abs()
                 < 1e-15
         );
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+    use crate::units::Wavelength;
+
+    #[test]
+    fn lookup_ignores_case() {
+        // Zemax and catalog files do not agree on capitalisation.
+        let mut db = MaterialDatabase::new();
+        db.insert(Material::new(
+            "N-SF11",
+            Box::new(ConstIndex(1.78)),
+            0.0,
+            crate::units::REFERENCE_TEMPERATURE,
+        ));
+        assert!(db.get("n-sf11").is_some());
+        assert!(db.get("N-SF11").is_some());
+        assert!(db.get("N-SF12").is_none());
+    }
+
+    #[test]
+    fn edlen_outside_its_range_is_nan() {
+        // The formula has poles at about 0.156 µm and 0.083 µm, and it is
+        // only valid for 0.2–2 µm. Outside that range it must not return a
+        // number that looks valid.
+        assert!(EdlenAir.real_index(Wavelength::from_um(0.1)).is_nan());
+        assert!(EdlenAir.real_index(Wavelength::from_um(3.0)).is_nan());
+        assert!(EdlenAir.real_index(Wavelength::from_um(0.5)).is_finite());
+    }
+}
+
+#[cfg(test)]
+mod suggestion_tests {
+    use super::*;
+
+    #[test]
+    fn suggests_a_near_miss_name() {
+        let db = MaterialDatabase::presets();
+        assert_eq!(db.closest_name("n-bk7", 1), Some("n_bk7"));
+        assert_eq!(db.closest_name("bk8", 1), Some("bk7"));
+    }
+
+    #[test]
+    fn no_suggestion_for_an_unrelated_name() {
+        let db = MaterialDatabase::presets();
+        assert_eq!(db.closest_name("unobtainium", 2), None);
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn bk7_abbe_number_and_glass_code_match_the_datasheet() {
+        let db = MaterialDatabase::presets();
+        let bk7 = db.get("bk7").unwrap();
+        assert!(
+            (bk7.abbe_number() - 64.17).abs() < 0.1,
+            "{}",
+            bk7.abbe_number()
+        );
+        // Schott code 517642; the model's V_d may land one unit off.
+        let code = bk7.glass_code();
+        assert!(code.starts_with("517"), "{code}");
+        let vd: i64 = code[3..].parse().unwrap();
+        assert!((vd - 642).abs() <= 1, "{code}");
+    }
+
+    #[test]
+    fn validity_range_is_reported_outside_the_fit() {
+        let db = MaterialDatabase::presets();
+        let bk7 = db.get("bk7").unwrap();
+        assert!(!bk7.outside_validity(Wavelength::from_nm(587.6)));
+        assert!(bk7.outside_validity(Wavelength::from_nm(5000.0)));
+        assert!(bk7.outside_validity(Wavelength::from_nm(200.0)));
+    }
+
+    #[test]
+    fn material_without_a_declared_range_never_warns() {
+        let db = MaterialDatabase::presets();
+        let water = db.get("water").unwrap();
+        assert_eq!(water.validity_nm(), None);
+        assert!(!water.outside_validity(Wavelength::from_nm(50_000.0)));
     }
 }

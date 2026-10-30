@@ -23,10 +23,10 @@ pub fn bessel_j1(x: f64) -> f64 {
 /// above. Uses upward recurrence from `J₀, J₁` (stable for `ν ≤ x`).
 ///
 /// # Panics
-/// Panics in debug builds for negative orders.
+/// Panics for negative orders, in every build profile.
 pub fn bessel_j(nu: i32, x: f64) -> f64 {
-    debug_assert!(nu >= 0, "negative order not supported");
-    let ax = x.abs();
+    assert!(nu >= 0, "negative order not supported");
+    let ax = libm::fabs(x);
     if ax < 1e-10 {
         return if nu == 0 {
             1.0
@@ -81,7 +81,7 @@ fn miller_j(n: usize, x: f64) -> f64 {
         } else if idx % 2 == 0 {
             total += 2.0 * jk;
         }
-        if jk.abs() > 1e100 {
+        if libm::fabs(jk) > 1e100 {
             // Rescale everything together; the ratio j_n / total is unchanged.
             jk *= 1e-100;
             jp *= 1e-100;
@@ -105,7 +105,7 @@ fn j0_j1_series(x: f64) -> (f64, f64) {
         s0 += term0;
         term1 *= -half_x2 / (k as f64 * (k as f64 + 1.0));
         s1 += term1;
-        if term0.abs() < 1e-18 && term1.abs() < 1e-18 {
+        if libm::fabs(term0) < 1e-18 && libm::fabs(term1) < 1e-18 {
             break;
         }
     }
@@ -116,7 +116,7 @@ fn j0_j1_series(x: f64) -> (f64, f64) {
 /// `Jν(x) ≈ √(2/(πx))·(P·cos ω − Q·sin ω)`, `ω = x − νπ/2 − π/4`, with the
 /// standard P/Q polynomial corrections through 4th/3rd order.
 fn j_asymptotic(nu: i32, x: f64) -> f64 {
-    let ax = x.abs();
+    let ax = libm::fabs(x);
     let mu = 4.0 * nu as f64 * nu as f64;
     let chi = ax - nu as f64 * core::f64::consts::FRAC_PI_2 - core::f64::consts::FRAC_PI_4;
     let a = mu - 1.0;
@@ -157,8 +157,8 @@ pub fn bessel_k1(x: f64) -> f64 {
 /// # Panics
 /// Panics for `x ≤ 0` or negative orders.
 pub fn bessel_k(nu: i32, x: f64) -> f64 {
-    debug_assert!(nu >= 0, "negative order not supported");
-    debug_assert!(x > 0.0, "Kν defined for x > 0");
+    assert!(nu >= 0, "negative order not supported");
+    assert!(x > 0.0, "Kν defined for x > 0");
     let (k0, k1) = k0_k1(x);
     match nu {
         0 => k0,
@@ -186,12 +186,12 @@ fn k_asymptotic(mu: f64, x: f64) -> f64 {
     for k in 1..60u32 {
         let odd = (2 * k - 1) as f64;
         term *= (mu - odd * odd) / (k as f64 * 8.0 * x);
-        if term.abs() > smallest {
+        if libm::fabs(term) > smallest {
             break;
         }
-        smallest = term.abs();
+        smallest = libm::fabs(term);
         sum += term;
-        if term.abs() < 1e-17 * sum.abs() {
+        if libm::fabs(term) < 1e-17 * libm::fabs(sum) {
             break;
         }
     }
@@ -222,7 +222,7 @@ fn k0_k1(x: f64) -> (f64, f64) {
             term *= y / (k as f64 * k as f64);
             i0 += term;
             k0 += term * psi(k + 1);
-            if term.abs() < 1e-19 {
+            if libm::fabs(term) < 1e-19 {
                 break;
             }
         }
@@ -236,7 +236,7 @@ fn k0_k1(x: f64) -> (f64, f64) {
             k1 += term * bracket;
             let next = k + 1;
             term *= y / (next as f64 * (next as f64 + 1.0));
-            if term.abs() < 1e-19 {
+            if libm::fabs(term) < 1e-19 {
                 break;
             }
         }
@@ -369,5 +369,23 @@ mod large_x_high_order_tests {
         }
         let miller = bessel_j(5, x);
         assert!((miller - j).abs() < 1e-6, "J5(30): {miller} vs {j}");
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "negative order")]
+    fn negative_order_panics_in_every_profile() {
+        // This used to be a debug_assert, so a release build returned a value.
+        let _ = bessel_j(-1, 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "x > 0")]
+    fn k_nonpositive_argument_panics_in_every_profile() {
+        let _ = bessel_k(0, 0.0);
     }
 }

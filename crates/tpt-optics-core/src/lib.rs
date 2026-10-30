@@ -74,3 +74,9 @@ pub use crate::linalg::{Matrix2, Vec2, Vec3};
 pub use crate::num::Scalar;
 pub use crate::rng::Rng;
 pub use crate::units::{Kelvin, Wavelength};
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

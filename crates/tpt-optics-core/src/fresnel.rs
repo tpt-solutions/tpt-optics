@@ -70,13 +70,12 @@ pub fn fresnel_energy(n1: f64, n2: f64, theta_i: f64) -> (f64, f64, f64, f64) {
     let c2 = libm::sqrt(1.0 - s2 * s2);
     let rs = (n1 * c1 - n2 * c2) / (n1 * c1 + n2 * c2);
     let rp = (n2 * c1 - n1 * c2) / (n2 * c1 + n1 * c2);
-    let ts = 2.0 * n1 * c1 / (n1 * c1 + n2 * c2);
-    let tp = 2.0 * n1 * c1 / (n2 * c1 + n1 * c2);
     let rs2 = rs * rs;
     let rp2 = rp * rp;
-    let flux = n2 * c2 / (n1 * c1);
-    let ts2 = ts * ts * flux;
-    let tp2 = tp * tp * flux;
+    // Transmitted power T = (n₂c₂/n₁c₁)·t². The cos θ₁ factors cancel, so
+    // this form stays finite at grazing incidence, where c₁ = 0.
+    let ts2 = 4.0 * n1 * n2 * c1 * c2 / ((n1 * c1 + n2 * c2) * (n1 * c1 + n2 * c2));
+    let tp2 = 4.0 * n1 * n2 * c1 * c2 / ((n2 * c1 + n1 * c2) * (n2 * c1 + n1 * c2));
     (rs2, rp2, ts2, tp2)
 }
 
@@ -177,5 +176,31 @@ mod tests {
         // basis convention); transmitted amplitudes are equal.
         assert!(close(c.rs.abs(), c.rp.abs(), 1e-12));
         assert!(c.ts.approx_eq(c.tp, 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod grazing_tests {
+    use super::*;
+
+    #[test]
+    fn grazing_incidence_energy_is_finite_and_conserved() {
+        // At 90° the old transmittance formula divided by cos θ = 0 and gave NaN.
+        let (rs, rp, ts, tp) = fresnel_energy(1.0, 1.5, core::f64::consts::FRAC_PI_2);
+        for v in [rs, rp, ts, tp] {
+            assert!(v.is_finite(), "{rs} {rp} {ts} {tp}");
+        }
+        assert!((rs + ts - 1.0).abs() < 1e-12, "s: {rs} + {ts}");
+        assert!((rp + tp - 1.0).abs() < 1e-12, "p: {rp} + {tp}");
+    }
+
+    #[test]
+    fn energy_is_conserved_over_angles() {
+        for k in 0..=89 {
+            let th = (k as f64).to_radians();
+            let (rs, rp, ts, tp) = fresnel_energy(1.0, 1.5, th);
+            assert!((rs + ts - 1.0).abs() < 1e-12, "s at {k}: {rs} + {ts}");
+            assert!((rp + tp - 1.0).abs() < 1e-12, "p at {k}: {rp} + {tp}");
+        }
     }
 }
