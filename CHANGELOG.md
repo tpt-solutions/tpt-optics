@@ -25,6 +25,12 @@ All notable changes to tpt-optics are documented here. Format follows
   coefficients, which converge quickly for rods. For square rods
   (ε = 8.9, r/a = 0.2, M = 5) it gives a full-zone gap of (0.324, 0.447) c/a
   and a missing-rod defect level at 0.393 c/a, converged to ~0.3%.
+- **`tpt-optics-waveguide`**: Full-vector mode solver, `vector_fem` module.
+  Hybrid edge–nodal formulation (first-order Nédélec for E_t, P1 for E_z),
+  reduced to `A·e = β²·B·e` and solved by inverse iteration. Checked against
+  the PEC rectangular-guide TE10 cutoff, the exact dielectric-slab TE0 index,
+  and the scalar solver on a weak strip. Dense, so practical for a few
+  hundred edges.
 - **`tpt-optics-waveguide`**: `eigen` module. Dense symmetric eigenvalues by
   Householder tridiagonalisation and implicit QL, checked against the Jacobi
   solver. Supercell solvers use it instead of Jacobi.

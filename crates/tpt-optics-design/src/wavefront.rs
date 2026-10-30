@@ -248,7 +248,7 @@ mod tests {
         sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
         let grid = hexapolar_grid(6);
         let samples = wavefront_samples(&sys, ctx(), 0.0, &grid, 5e-3);
-        assert!(!samples.is_empty());
+        assert_ne!(samples.len(), 0);
         assert!(wavefront_rms(&samples, 0) > 1e-9);
     }
 

@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn v_number_zero_no_modes() {
-        assert!(fiber_lp_modes(1e-6, 1.444, 1.444, wl(1550.0), 1).is_empty());
+        assert_eq!(fiber_lp_modes(1e-6, 1.444, 1.444, wl(1550.0), 1).len(), 0);
     }
 
     #[test]

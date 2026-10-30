@@ -594,7 +594,7 @@ mod zernike_range_tests {
 
     #[test]
     fn invalid_radial_order_is_empty_not_a_panic() {
-        assert!(zernike_radial_coeffs(2, 4).is_empty());
-        assert!(zernike_radial_coeffs(4, 1).is_empty());
+        assert_eq!(zernike_radial_coeffs(2, 4).len(), 0);
+        assert_eq!(zernike_radial_coeffs(4, 1).len(), 0);
     }
 }

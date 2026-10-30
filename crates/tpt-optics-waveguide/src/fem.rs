@@ -8,8 +8,9 @@
 //!
 //! Accuracy: with the default mesh (~30 samples per wavelength-scale width)
 //! the fundamental β agrees with the effective index method to ~1 % for
-//! well-confined modes. This is a scalar (weak-guidance) solver; full
-//! vectorial FEM awaits the `tpt-fem` dependency.
+//! well-confined modes. This is a scalar (weak-guidance) solver. For the full
+//! vector field see [`crate::vector_fem`], which is built in-workspace and
+//! does not depend on the external `tpt-fem` crate.
 
 use alloc::vec::Vec;
 
@@ -335,7 +336,7 @@ mod tests {
             thickness: h,
         };
         let modes = crate::slab::slab_modes(&slab, wl(1550.0), crate::slab::SlabPolarization::Te);
-        assert!(!modes.is_empty());
+        assert_ne!(modes.len(), 0);
         let beta_ref = modes[0].n_eff * wl(1550.0).wavenumber();
         assert!(
             (beta_fem - beta_ref).abs() < 0.05 * beta_ref,

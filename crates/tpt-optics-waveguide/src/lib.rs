@@ -13,6 +13,7 @@
 //! | [`phc`] | 1-D Bloch band structure and 2-D plane-wave expansion |
 //! | [`devices`] | Mach–Zehnder interferometers, arrayed waveguide gratings |
 //! | [`fem`] | scalar 2-D finite-element mode solver (P1 triangles) |
+//! | [`vector_fem`] | full-vector hybrid edge–nodal mode solver (Nédélec edges + P1) |
 //!
 //! All solvers are from scratch; accuracy limits are documented per module
 //! (weak guidance, paraxial approximations, plane-wave cutoffs).
@@ -32,6 +33,7 @@ pub mod graded;
 pub mod phc;
 pub mod slab;
 pub mod supercell;
+pub mod vector_fem;
 
 pub mod prelude {
     //! Convenience re-export of the most-used waveguide types.

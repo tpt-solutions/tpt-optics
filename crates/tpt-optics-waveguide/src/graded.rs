@@ -146,7 +146,7 @@ mod tests {
         let n_exact = sqrt(n1 * n1 - e_exact / (k0 * k0));
 
         let modes = graded_lp_modes(a, n1, n2, 2.0, w, 0, DEFAULT_RADIAL_POINTS);
-        assert!(!modes.is_empty());
+        assert_ne!(modes.len(), 0);
         let ground = modes[0];
         assert_eq!((ground.l, ground.m), (0, 1));
         assert!(
@@ -192,6 +192,9 @@ mod tests {
 
     #[test]
     fn zero_contrast_has_no_modes() {
-        assert!(graded_lp_modes(5e-6, 1.444, 1.444, 2.0, wl(1550.0), 1, 64).is_empty());
+        assert_eq!(
+            graded_lp_modes(5e-6, 1.444, 1.444, 2.0, wl(1550.0), 1, 64).len(),
+            0
+        );
     }
 }
