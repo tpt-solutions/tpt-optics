@@ -15,4 +15,11 @@
 
 pub mod glass;
 pub mod seq;
+pub mod text;
 pub mod zmx;
+
+// The README examples are compiled and run as doctests, so they cannot drift
+// from the code.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

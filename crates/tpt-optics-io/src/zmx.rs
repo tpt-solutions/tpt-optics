@@ -2,7 +2,14 @@
 //!
 //! Supported keywords per surface: `SURF`, `CURV` (curvature + asphere
 //! terms), `DISZ` (thickness; `INFINITY` supported), `GLAS` (name + d/Abbe
-//! + index hint), `CONI`, `DIAM`, `STOP`, `NAME`. Header: `MODE SEQ`.
+//! + index hint), `CONI`, `DIAM`, `STOP`, `NAME`, `TYPE STANDARD`. Header: `MODE SEQ`.
+//!
+//! Keywords that would change the geometry but are not modelled are errors,
+//! not silent drops: `TYPE` other than `STANDARD`, and `PARM` with a non-zero
+//! value. Other unknown keywords (`FNUM`, `WAVL`, ...) are ignored. `STOP`
+//! is kept in the document but does not change the trace. The object-space
+//! `DISZ` is kept on surface 0 but is not used, because rays are launched at
+//! the first traced surface.
 
 use std::string::{String, ToString};
 use std::vec::Vec;
@@ -26,8 +33,7 @@ impl core::fmt::Display for ZmxError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for ZmxError {}
+impl core::error::Error for ZmxError {}
 
 /// One parsed surface record.
 #[derive(Clone, Debug, PartialEq)]
@@ -78,6 +84,8 @@ pub struct ZmxDocument {
 
 /// Parse a text `.zmx` document.
 pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
+    // A UTF-8 byte-order mark is not part of the first keyword.
+    let text = text.trim_start_matches('\u{feff}');
     let mut doc = ZmxDocument::default();
     let mut current: Option<ZmxSurface> = None;
     for (idx, raw) in text.lines().enumerate() {
@@ -175,6 +183,30 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                 })?;
                 c.stop = true;
             }
+            "TYPE" => {
+                // Only standard surfaces are modelled. Other types (EVENASPH,
+                // ...) keep their shape in PARM lines, which are not read.
+                let kind = args.first().copied().unwrap_or("");
+                if !kind.eq_ignore_ascii_case("STANDARD") {
+                    return Err(ZmxError {
+                        line: line_no,
+                        message: std::format!(
+                            "surface type '{kind}' is not supported (only STANDARD)"
+                        ),
+                    });
+                }
+            }
+            "PARM" => {
+                // A non-zero parameter belongs to a non-standard surface type
+                // and would be dropped, so it is an error.
+                let value = parse_f64(args.get(1), line_no)?;
+                if value != 0.0 {
+                    return Err(ZmxError {
+                        line: line_no,
+                        message: "non-zero surface parameters (PARM) are not supported".into(),
+                    });
+                }
+            }
             _ => {} // tolerated unknown keywords (FNUM, WAVL, ...)
         }
     }
@@ -201,35 +233,36 @@ pub fn write(doc: &ZmxDocument) -> String {
     let mut out = String::new();
     out.push_str("MODE SEQ\n");
     if !doc.name.is_empty() {
-        let _ = writeln!(out, "NAME {}\n", doc.name);
+        let _ = writeln!(out, "NAME {}", doc.name);
     }
     for s in &doc.surfaces {
         out.push_str("SURF\n");
         if !s.name.is_empty() {
-            let _ = writeln!(out, "NAME {}\n", s.name);
+            let _ = writeln!(out, "NAME {}", s.name);
         }
         if s.stop {
             out.push_str("STOP\n");
         }
         // CURV: curvature in 1/mm, then all eight asphere terms in lens units.
+        // Shortest exact form (`{:e}`), so coefficients of any size round-trip.
         let mut curv = std::format!("CURV {:.12}", s.curvature / 1e3);
         for a in &s.asphere {
-            let _ = write!(curv, " {a:.12}");
+            let _ = write!(curv, " {a:e}");
         }
-        let _ = writeln!(out, "{curv}\n");
-        let _ = writeln!(out, "CONI {:.12}\n", s.conic);
+        let _ = writeln!(out, "{curv}");
+        let _ = writeln!(out, "CONI {:.12}", s.conic);
         if !s.glass.is_empty() {
-            let _ = writeln!(out, "GLAS {} 0 0 0 0\n", s.glass);
+            let _ = writeln!(out, "GLAS {} 0 0 0 0", s.glass);
         }
         if s.semi_diameter > 0.0 {
-            let _ = writeln!(out, "DIAM {:.6}\n", s.semi_diameter * 1e3);
+            let _ = writeln!(out, "DIAM {:.6}", s.semi_diameter * 1e3);
         }
         let th = if s.thickness.is_infinite() {
             "INFINITY".to_string()
         } else {
             std::format!("{:.9}", s.thickness * 1e3)
         };
-        let _ = writeln!(out, "DISZ {th}\n");
+        let _ = writeln!(out, "DISZ {th}");
     }
     out
 }
@@ -283,15 +316,17 @@ pub fn to_sequential(
             Medium::Material(mat)
         } else {
             // Unknown glass: try to parse a plain index ("1.5168") or fail.
-            let n: Option<f64> = s.glass.parse().ok();
-            match n {
-                Some(v) => Medium::Const(v),
-                None => {
-                    return Err(ZmxError {
-                        line: 0,
-                        message: std::format!("glass '{}' not in catalog", s.glass),
-                    })
-                }
+            if let Ok(v) = s.glass.parse::<f64>() {
+                Medium::Const(v)
+            } else {
+                let hint = match catalog.closest_name(&s.glass, 2) {
+                    Some(near) => std::format!("; did you mean '{near}'?"),
+                    None => String::new(),
+                };
+                return Err(ZmxError {
+                    line: 0,
+                    message: std::format!("glass '{}' not in catalog{hint}", s.glass),
+                });
             }
         };
         let action = if is_mirror {
@@ -356,16 +391,19 @@ pub fn from_sequential(system: &SequentialSystem) -> ZmxDocument {
             z.thickness = system.thickness[i];
         }
         match (&system.media[i + 1], s.action) {
-            (Medium::Vacuum, _) => {}
+            // A mirror is a mirror whatever medium it sits in, so this arm
+            // comes before the vacuum check.
             (_, SurfaceAction::Reflect) => {
                 z.glass = "MIRROR".into();
             }
             (_, SurfaceAction::Diffract) => {
                 z.glass = String::new();
             }
+            (Medium::Vacuum, _) => {}
             (Medium::Const(v), SurfaceAction::Refract) => {
+                // `{v}` is the shortest exact form, so the index survives a round trip.
                 if *v != 1.0 {
-                    z.glass = std::format!("{v:.6}");
+                    z.glass = std::format!("{v}");
                 }
             }
             (Medium::Material(m), SurfaceAction::Refract) => {
@@ -582,6 +620,95 @@ mod mirror_medium_tests {
 }
 
 #[cfg(test)]
+mod unsupported_and_precision_tests {
+    use super::*;
+
+    #[test]
+    fn aspheric_surface_type_is_an_error() {
+        // An EVENASPH surface keeps its shape in PARM lines. Loading it as a
+        // sphere would give the wrong geometry, so it must be rejected.
+        let text = "MODE SEQ\nSURF\nTYPE EVENASPH\nCURV 0.01\nPARM 1 0.5\n";
+        let err = parse(text).unwrap_err();
+        assert_eq!(err.line, 3, "{err}");
+    }
+
+    #[test]
+    fn standard_surface_type_is_accepted() {
+        let doc = parse("MODE SEQ\nSURF\nTYPE STANDARD\nCURV 0.01\n").unwrap();
+        assert_eq!(doc.surfaces.len(), 1);
+    }
+
+    #[test]
+    fn nonzero_parameter_is_an_error() {
+        let err = parse("MODE SEQ\nSURF\nPARM 2 0.25\n").unwrap_err();
+        assert_eq!(err.line, 3, "{err}");
+    }
+
+    #[test]
+    fn asphere_coefficients_survive_write_and_parse_exactly() {
+        // Writing with {:.12} rounded these to 12 decimals.
+        let mut doc = ZmxDocument::default();
+        let mut s = ZmxSurface {
+            curvature: 10.0,
+            ..ZmxSurface::default()
+        };
+        s.asphere = [
+            1.234_567_890_123_45e-9,
+            -3.141_592_653_589_79e-6,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            2.5e-14,
+        ];
+        doc.surfaces.push(s);
+        let doc2 = parse(&write(&doc)).unwrap();
+        assert_eq!(doc2.surfaces[0].asphere, doc.surfaces[0].asphere);
+    }
+}
+
+#[cfg(test)]
+mod export_and_bom_tests {
+    use super::*;
+
+    #[test]
+    fn written_text_has_no_blank_lines() {
+        // Each record used to end with an extra newline, which gave a blank
+        // line after every keyword.
+        let doc = parse("MODE SEQ\nNAME t\nSURF\nSTOP\nCURV 0.01\nDISZ 5\n").unwrap();
+        let text = write(&doc);
+        assert!(!text.contains("\n\n"), "{text:?}");
+        assert_eq!(parse(&text).unwrap(), doc);
+    }
+
+    #[test]
+    fn mirror_in_vacuum_is_exported_as_mirror() {
+        // A mirror in air used to lose its MIRROR tag on export.
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::mirror(1.0 / 0.5, 20e-3), 0.0, Medium::Vacuum);
+        let doc = from_sequential(&sys);
+        assert_eq!(doc.surfaces[1].glass, "MIRROR");
+    }
+
+    #[test]
+    fn index_hint_survives_export_exactly() {
+        // The index was written with six decimals, which changed the value.
+        let n = 1.516_812_345_678_9;
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::flat(5e-3), 0.0, Medium::Const(n));
+        let doc = from_sequential(&sys);
+        assert_eq!(doc.surfaces[1].glass.parse::<f64>().unwrap(), n);
+    }
+
+    #[test]
+    fn utf8_bom_is_ignored() {
+        let doc = parse("\u{feff}MODE SEQ\nSURF\nCURV 0.01\n").unwrap();
+        assert_eq!(doc.surfaces.len(), 1);
+    }
+}
+
+#[cfg(test)]
 mod finite_number_tests {
     use super::*;
 
@@ -591,5 +718,36 @@ mod finite_number_tests {
             let text = std::format!("MODE SEQ\nSURF\nCURV {bad}\n");
             assert!(parse(&text).is_err(), "accepted CURV {bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod glass_hint_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_glass_error_suggests_a_near_miss() {
+        let text = "MODE SEQ
+SURF
+CURV 0
+DISZ 5
+SURF
+GLAS N-BK8 0 0 0 0
+DISZ 5
+SURF
+";
+        let doc = parse(text).unwrap();
+        let err = to_sequential(
+            &doc,
+            &crate::glass::reference_catalog(),
+            Wavelength::from_nm(550.0),
+            Kelvin::from_celsius(20.0),
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("did you mean 'N-BK7'"),
+            "{}",
+            err.message
+        );
     }
 }

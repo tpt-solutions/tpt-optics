@@ -26,12 +26,13 @@ impl core::fmt::Display for SeqError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for SeqError {}
+impl core::error::Error for SeqError {}
 
 /// Parse a `.seq` document into surfaces
 /// `(radius_m, thickness_m, glass_name, stop)`.
 pub fn parse(text: &str) -> Result<Vec<(f64, f64, String, bool)>, SeqError> {
+    // A UTF-8 byte-order mark is not part of the first keyword.
+    let text = text.trim_start_matches('\u{feff}');
     let mut out: Vec<(f64, f64, String, bool)> = Vec::new();
     let mut stop_next = false;
     for (idx, raw) in text.lines().enumerate() {
@@ -92,8 +93,10 @@ fn parse_radius(v: Option<&&str>, line: usize) -> Result<f64, SeqError> {
         return Ok(0.0);
     }
     s.parse::<f64>()
+        .ok()
+        .filter(|mm| mm.is_finite())
         .map(|mm| mm * 1e-3) // mm → m
-        .map_err(|_| SeqError {
+        .ok_or(SeqError {
             line,
             message: "bad radius".into(),
         })
@@ -107,10 +110,14 @@ fn parse_len(v: Option<&&str>, line: usize) -> Result<f64, SeqError> {
     if s.eq_ignore_ascii_case("INF") {
         return Ok(f64::INFINITY);
     }
-    s.parse::<f64>().map(|mm| mm * 1e-3).map_err(|_| SeqError {
-        line,
-        message: "bad thickness".into(),
-    })
+    s.parse::<f64>()
+        .ok()
+        .filter(|mm| mm.is_finite())
+        .map(|mm| mm * 1e-3)
+        .ok_or(SeqError {
+            line,
+            message: "bad thickness".into(),
+        })
 }
 
 /// Serialize surfaces back to `.seq` text.
@@ -159,9 +166,9 @@ pub fn to_sequential(
             // placing a flat "surface 0" at the origin and shifting.
             continue;
         }
-        let medium_after = if is_last {
-            Medium::Vacuum
-        } else if glass.is_empty()
+        // Air outside the last surface, as in the zmx reader.
+        let medium_after = if is_last
+            || glass.is_empty()
             || glass.eq_ignore_ascii_case("AIR")
             || glass.to_ascii_uppercase().starts_with("MIRROR")
         {
@@ -250,5 +257,28 @@ GO
         // Curvature: radius 100 mm → 10 1/m.
         assert!((sys.surfaces[0].asphere.curvature - 10.0).abs() < 1e-9);
         assert!((sys.surfaces[1].asphere.curvature + 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_finite_radius_or_thickness_is_rejected() {
+        // Rust parses "nan" and "-inf" as f64, so the parser must reject them.
+        for line in ["S nan 5 N-BK7", "S 100 nan", "S 100 -inf", "S 1e999 5"] {
+            let text = std::format!("SO INF 10\n{line}\nS INF 0\n");
+            assert!(parse(&text).is_err(), "accepted: {line}");
+        }
+    }
+
+    #[test]
+    fn last_medium_is_air_as_in_zmx() {
+        // The medium after the last surface matches the zmx reader's air.
+        let s = parse(SAMPLE).unwrap();
+        let sys = to_sequential(&s, |_| Some(Medium::Const(1.5168))).unwrap();
+        assert!(matches!(sys.media.last(), Some(Medium::Const(v)) if *v == 1.0));
+    }
+
+    #[test]
+    fn utf8_bom_is_ignored() {
+        let s = parse("\u{feff}LEN NEW\nSO INF 10\nS 100 5\nGO\n").unwrap();
+        assert_eq!(s.len(), 2);
     }
 }
