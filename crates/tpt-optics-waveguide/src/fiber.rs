@@ -54,7 +54,9 @@ pub fn fiber_lp_modes(
             }
         };
         // Scan u ∈ (max(ε, previous root), min(V, ...)) for sign changes.
-        let n_scan = 400;
+        // Bessel zeros are about π apart, so the scan needs a few points per
+        // unit of V to see every root. A fixed count missed roots at large V.
+        let n_scan = (libm::ceil(4.0 * v) as usize).max(400);
         let mut prev_u = 1e-6_f64;
         let mut prev_f = f(prev_u);
         for i in 1..=n_scan {
@@ -168,5 +170,29 @@ mod near_cutoff_tests {
         let lam = core::f64::consts::TAU * a * na / 2.41;
         let modes = fiber_lp_modes(a, n1, n2, Wavelength::from_nm(lam * 1e9), 1);
         assert!(modes.iter().any(|m| m.l == 1), "LP11 missing: {modes:?}");
+    }
+}
+
+#[cfg(test)]
+mod high_v_tests {
+    use super::*;
+
+    #[test]
+    fn fundamental_family_is_complete_at_large_v() {
+        // LP₀ₘ cutoffs are the zeros of J₁, about π apart, so V/π modes are
+        // guided. A fixed 400-point scan missed about a sixth of them at V ≈ 1500.
+        let wl = Wavelength::from_um(0.8);
+        // n₁² − n₂² = 0.09 gives NA = 0.3, so V = k₀·a·0.3 ≈ 1500.
+        let (a, n1) = (640e-6, 1.5);
+        let n2 = libm::sqrt(n1 * n1 - 0.09);
+        let v = wl.wavenumber() * a * libm::sqrt(n1 * n1 - n2 * n2);
+        assert!(v > 1000.0, "V = {v}");
+        let modes = fiber_lp_modes(a, n1, n2, wl, 0);
+        let expected = (v / core::f64::consts::PI) as usize;
+        assert!(
+            modes.len() + 2 >= expected,
+            "found {} LP0m modes, expected about {expected} at V = {v}",
+            modes.len()
+        );
     }
 }

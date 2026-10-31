@@ -12,19 +12,44 @@ use alloc::vec::Vec;
 
 use libm::{fabs, hypot};
 
+/// The QL iteration did not converge for one eigenvalue (typically because
+/// the input contained NaN or infinity). Eigenvalues from an unconverged run
+/// would be wrong, so none are returned.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct EigenError {
+    /// Index of the tridiagonal block whose eigenvalue did not settle.
+    pub index: usize,
+}
+
+impl core::fmt::Display for EigenError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "eigenvalue {} did not converge (is the matrix finite?)",
+            self.index
+        )
+    }
+}
+
+impl core::error::Error for EigenError {}
+
 /// All eigenvalues of the real symmetric `n × n` matrix `a` (row-major),
 /// returned in ascending order. `a` is overwritten.
-pub fn symmetric_eigenvalues(a: &mut [f64], n: usize) -> Vec<f64> {
+///
+/// # Errors
+///
+/// [`EigenError`] when the QL iteration hits its cap for some eigenvalue.
+pub fn symmetric_eigenvalues(a: &mut [f64], n: usize) -> Result<Vec<f64>, EigenError> {
     debug_assert_eq!(a.len(), n * n);
     if n == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut d = vec![0.0; n];
     let mut e = vec![0.0; n];
     householder_tridiagonal(a, n, &mut d, &mut e);
-    implicit_ql(&mut d, &mut e);
+    implicit_ql(&mut d, &mut e)?;
     d.sort_by(f64::total_cmp);
-    d
+    Ok(d)
 }
 
 /// Householder reduction of the symmetric matrix `a` to tridiagonal form.
@@ -94,7 +119,11 @@ const EPS: f64 = 1e-15;
 /// Eigenvalues of a symmetric tridiagonal matrix (diagonal `d`, off-diagonal
 /// `e[i]` coupling rows `i − 1` and `i`, with `e[0]` unused) by implicit QL.
 /// On exit `d` holds the eigenvalues in no particular order.
-fn implicit_ql(d: &mut [f64], e_in: &mut [f64]) {
+///
+/// # Errors
+///
+/// [`EigenError`] when some block needs more than 200 iterations.
+fn implicit_ql(d: &mut [f64], e_in: &mut [f64]) -> Result<(), EigenError> {
     let n = d.len();
     // Shift so that `e[i]` couples rows `i` and `i + 1`.
     let mut e = vec![0.0; n];
@@ -117,7 +146,7 @@ fn implicit_ql(d: &mut [f64], e_in: &mut [f64]) {
             }
             iter += 1;
             if iter > 200 {
-                break;
+                return Err(EigenError { index: l });
             }
             let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
             let mut r = hypot(g, 1.0);
@@ -154,6 +183,7 @@ fn implicit_ql(d: &mut [f64], e_in: &mut [f64]) {
             e[m] = 0.0;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -185,10 +215,10 @@ mod tests {
         for &(n, seed) in &[(2usize, 1u64), (5, 7), (17, 3), (40, 11)] {
             let a = random_symmetric(n, seed);
             let mut for_ql = a.clone();
-            let ql = symmetric_eigenvalues(&mut for_ql, n);
+            let ql = symmetric_eigenvalues(&mut for_ql, n).unwrap();
             let mut for_jac = a.clone();
             let mut jac = vec![0.0; n];
-            jacobi_eigen(&mut for_jac, &mut jac);
+            jacobi_eigen(&mut for_jac, &mut jac).unwrap();
             for (x, y) in ql.iter().zip(&jac) {
                 assert!((x - y).abs() < 1e-9, "n={n}: {x} vs {y}");
             }
@@ -198,34 +228,33 @@ mod tests {
     #[test]
     fn empty_and_scalar_matrices() {
         let mut none: Vec<f64> = Vec::new();
-        assert_eq!(symmetric_eigenvalues(&mut none, 0), Vec::<f64>::new());
+        assert_eq!(symmetric_eigenvalues(&mut none, 0), Ok(Vec::<f64>::new()));
         let mut one = vec![-4.5];
-        assert_eq!(symmetric_eigenvalues(&mut one, 1), vec![-4.5]);
+        assert_eq!(symmetric_eigenvalues(&mut one, 1), Ok(vec![-4.5]));
     }
 
     #[test]
     fn repeated_eigenvalues_are_all_returned() {
         // 3·I has eigenvalue 3 with multiplicity 3.
         let mut a = vec![3.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 3.0];
-        let w = symmetric_eigenvalues(&mut a, 3);
+        let w = symmetric_eigenvalues(&mut a, 3).unwrap();
         assert_eq!(w.len(), 3);
         assert!(w.iter().all(|v| (v - 3.0).abs() < 1e-12), "{w:?}");
     }
 
     #[test]
-    fn nan_input_returns_without_hanging() {
-        // The QL iteration is capped, so NaN input must terminate. The result
-        // is not meaningful, but it must have one value per row.
-        let mut a = vec![f64::NAN, 1.0, 1.0, 2.0];
-        let w = symmetric_eigenvalues(&mut a, 2);
-        assert_eq!(w.len(), 2);
+    fn nan_input_is_an_error_not_a_wrong_spectrum() {
+        // The QL iteration is capped. A NaN coupling never settles, and the
+        // run used to return values anyway. Now it is an error.
+        let mut a = vec![1.0, f64::NAN, f64::NAN, 1.0];
+        assert!(symmetric_eigenvalues(&mut a, 2).is_err());
     }
 
     #[test]
     fn known_spectrum() {
         // [[2,1],[1,2]] → {1, 3}.
         let mut a = vec![2.0, 1.0, 1.0, 2.0];
-        let w = symmetric_eigenvalues(&mut a, 2);
+        let w = symmetric_eigenvalues(&mut a, 2).unwrap();
         assert!(
             (w[0] - 1.0).abs() < 1e-12 && (w[1] - 3.0).abs() < 1e-12,
             "{w:?}"

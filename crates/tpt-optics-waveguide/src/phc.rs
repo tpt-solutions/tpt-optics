@@ -11,6 +11,7 @@ use core::f64::consts::TAU;
 
 use libm::sqrt;
 
+use crate::eigen::EigenError;
 use crate::slab::{stack_r_t, StackLayer};
 
 /// Band-edge check for a 1-D Bragg stack: returns the Bloch-phase band
@@ -88,7 +89,21 @@ pub fn bragg_stack_bands(n1: f64, d1: f64, n2: f64, d2: f64) -> (f64, f64, f64) 
 /// * `epsilon` — rod dielectric constant,
 /// * `r_over_a` — rod radius over lattice constant,
 /// * `n_g` — plane waves per axis (odd; 5 or 7 recommended).
-pub fn pwem_te_bands(epsilon: f64, r_over_a: f64, n_g: usize, n_k: usize) -> Vec<Vec<f64>> {
+///
+/// # Errors
+///
+/// [`EigenError`] when a Jacobi diagonalisation does not converge.
+///
+/// # Panics
+///
+/// When `n_k` is zero: the path would have no points.
+pub fn pwem_te_bands(
+    epsilon: f64,
+    r_over_a: f64,
+    n_g: usize,
+    n_k: usize,
+) -> Result<Vec<Vec<f64>>, EigenError> {
+    assert!(n_k >= 1, "the k-path needs at least one point per segment");
     let n_bands = n_g * n_g;
     // Fourier factors of 1/ε for a square lattice of circular rods.
     // ε(G) = ε_bg δ + (ε_r − ε_bg)·f·2J₁(Gr)/(Gr)
@@ -120,7 +135,7 @@ pub fn pwem_te_bands(epsilon: f64, r_over_a: f64, n_g: usize, n_k: usize) -> Vec
     let gs: Vec<(i32, i32)> = (0..ng)
         .flat_map(|ix| (0..ng).map(move |iy| (ix - g_max, iy - g_max)))
         .collect();
-    let bands_at = |kx: f64, ky: f64| -> Vec<f64> {
+    let bands_at = |kx: f64, ky: f64| -> Result<Vec<f64>, EigenError> {
         let n = gs.len();
         let mut h = alloc::vec![0.0; n * n];
         for (i, &(gxi, gyi)) in gs.iter().enumerate() {
@@ -135,11 +150,11 @@ pub fn pwem_te_bands(epsilon: f64, r_over_a: f64, n_g: usize, n_k: usize) -> Vec
         // Eigenvalues of the symmetric H = (ω/c)²·a²; ωa/2πc = √λ / 2π.
         let mut eig = h;
         let mut w = alloc::vec![0.0; n];
-        jacobi_eigen(&mut eig, &mut w);
+        jacobi_eigen(&mut eig, &mut w)?;
         let mut freqs: Vec<f64> = w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect();
         freqs.sort_by(f64::total_cmp);
         freqs.truncate(6);
-        freqs
+        Ok(freqs)
     };
 
     // k-path Γ(0,0) → X(π/a,0) → M(π/a,π/a) → Γ.
@@ -161,30 +176,41 @@ pub fn pwem_te_bands(epsilon: f64, r_over_a: f64, n_g: usize, n_k: usize) -> Vec
     }
     let mut bands = alloc::vec![Vec::with_capacity(path.len()); n_bands.min(6)];
     for (kx, ky) in path {
-        let f = bands_at(kx, ky);
+        let f = bands_at(kx, ky)?;
         for (b, val) in bands.iter_mut().zip(f) {
             b.push(val);
         }
     }
-    bands
+    Ok(bands)
 }
 
 /// Cyclic Jacobi eigensolver for a real symmetric matrix (in place: `a` is
 /// destroyed, eigenvalues go to `w` ascending).
-pub fn jacobi_eigen(a: &mut [f64], w: &mut [f64]) {
+///
+/// Converges when the off-diagonal norm is below `10⁻¹⁴` of the matrix norm.
+/// The test is relative, so it works at any scale.
+///
+/// # Errors
+///
+/// [`EigenError`] when the iteration does not converge within 60 sweeps.
+pub fn jacobi_eigen(a: &mut [f64], w: &mut [f64]) -> Result<(), EigenError> {
     let n = libm::sqrt(a.len() as f64) as usize;
     debug_assert_eq!(a.len(), n * n);
+    let total: f64 = a.iter().map(|v| v * v).sum();
     let mut sweep = 0;
     loop {
-        // Off-diagonal norm.
+        // Off-diagonal norm squared.
         let mut off = 0.0;
         for i in 0..n {
             for j in (i + 1)..n {
                 off += a[i * n + j] * a[i * n + j];
             }
         }
-        if off < 1e-22 || sweep > 60 {
+        if off <= 1e-28 * total {
             break;
+        }
+        if sweep >= 60 {
+            return Err(EigenError { index: sweep });
         }
         sweep += 1;
         for p in 0..n {
@@ -218,6 +244,7 @@ pub fn jacobi_eigen(a: &mut [f64], w: &mut [f64]) {
         w[i] = a[i * n + i];
     }
     w.sort_by(f64::total_cmp);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -234,12 +261,12 @@ mod tests {
         // 2×2: [[2,1],[1,2]] → eigenvalues {1, 3}.
         let mut a = vec![2.0, 1.0, 1.0, 2.0];
         let mut w = [0.0; 2];
-        jacobi_eigen(&mut a, &mut w);
+        jacobi_eigen(&mut a, &mut w).unwrap();
         assert!(close(w[0], 1.0, 1e-10) && close(w[1], 3.0, 1e-10));
         // 3×3 Hilbert-ish symmetric.
         let mut h = vec![4.0, 1.0, 0.5, 1.0, 3.0, 0.25, 0.5, 0.25, 2.0];
         let mut w3 = [0.0; 3];
-        jacobi_eigen(&mut h, &mut w3);
+        jacobi_eigen(&mut h, &mut w3).unwrap();
         let trace: f64 = w3.iter().sum();
         assert!(close(trace, 9.0, 1e-9), "trace {trace}");
         for i in 1..3 {
@@ -267,11 +294,11 @@ mod tests {
         // converged bands overlap: this filling has no H_z gap, so the old
         // gap assertion (which relied on the wrong kernel) is replaced by a
         // convergence check. Band-1 top: 0.603 (N=5), 0.595 (N=7), 0.561 (N=9), 0.550 (N=11).
-        let coarse = pwem_te_bands(11.56, 0.2, 9, 8);
+        let coarse = pwem_te_bands(11.56, 0.2, 9, 8).unwrap();
         assert_eq!(coarse.len(), 6);
         let band1_top = coarse[0].iter().copied().fold(0.0_f64, f64::max);
         assert!(band1_top > 0.1 && band1_top < 0.8, "{band1_top}");
-        let fine = pwem_te_bands(11.56, 0.2, 11, 8);
+        let fine = pwem_te_bands(11.56, 0.2, 11, 8).unwrap();
         let fine_top = fine[0].iter().copied().fold(0.0_f64, f64::max);
         assert!(
             (band1_top - fine_top).abs() < 0.05 * fine_top,
@@ -290,7 +317,7 @@ mod empty_lattice_tests {
         // ε = 1 is free space: the lowest band is the folded light line,
         // min_G |k+G|/2π with G = 2π·(gx, gy), at every k-point.
         let n_k = 4;
-        let bands = pwem_te_bands(1.0, 0.2, 7, n_k);
+        let bands = pwem_te_bands(1.0, 0.2, 7, n_k).unwrap();
         for (i, &band0) in bands[0].iter().enumerate().take(n_k) {
             let kx = PI * i as f64 / n_k as f64;
             let mut best = f64::INFINITY;
@@ -305,5 +332,38 @@ mod empty_lattice_tests {
                 "k-point {i}: {band0} vs {best}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod jacobi_convergence_tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn jacobi_converges_at_any_scale() {
+        // An absolute off-diagonal threshold never met on a matrix of size
+        // 1e12, so the sweep cap was reached and unconverged values returned.
+        let mut a = vec![2e12, 1e12, 1e12, 2e12];
+        let mut w = [0.0; 2];
+        jacobi_eigen(&mut a, &mut w).unwrap();
+        assert!(
+            (w[0] - 1e12).abs() < 1e3 && (w[1] - 3e12).abs() < 1e3,
+            "{w:?}"
+        );
+    }
+
+    #[test]
+    fn zero_matrix_converges_immediately() {
+        let mut a = vec![0.0; 9];
+        let mut w = [1.0; 3];
+        assert_eq!(jacobi_eigen(&mut a, &mut w), Ok(()));
+        assert_eq!(w, [0.0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "k-path")]
+    fn zero_k_points_is_refused() {
+        let _ = pwem_te_bands(1.0, 0.2, 5, 0);
     }
 }

@@ -325,3 +325,97 @@ mod spectrum_tests {
         assert!(grating_spectrum(100.0, 0.01, 1000.0) < 0.1);
     }
 }
+
+/// Through-port power transmission of an all-pass ring with self-coupling
+/// amplitude `r` (`r² = 1 − κ²`), round-trip amplitude transmission `a` (`a = 1`
+/// lossless) and round-trip phase `phi`:
+///
+/// `T = (r² − 2ra·cos φ + a²) / (1 − 2ra·cos φ + (ra)²)`.
+#[must_use]
+pub fn ring_all_pass_through(r: f64, a: f64, phi: f64) -> f64 {
+    let c = libm::cos(phi);
+    let ra = r * a;
+    (r * r - 2.0 * ra * c + a * a) / (1.0 - 2.0 * ra * c + ra * ra)
+}
+
+/// Through and drop power transmissions of an add-drop ring with two couplers
+/// of amplitude self-coupling `r1` and `r2`, round-trip amplitude `a` and
+/// round-trip phase `phi`. Returns `(through, drop)`.
+///
+/// `drop = (1 − r1²)(1 − r2²)·a / D` and
+/// `through = (r1² − 2 r1 r2 a cos φ + r2² a²) / D` with
+/// `D = 1 − 2 r1 r2 a cos φ + (r1 r2 a)²`. With `a = 1` the sum is one.
+#[must_use]
+pub fn ring_add_drop(r1: f64, r2: f64, a: f64, phi: f64) -> (f64, f64) {
+    let c = libm::cos(phi);
+    let rr = r1 * r2 * a;
+    let d = 1.0 - 2.0 * rr * c + rr * rr;
+    let through = (r1 * r1 - 2.0 * rr * c + r2 * r2 * a * a) / d;
+    let drop = (1.0 - r1 * r1) * (1.0 - r2 * r2) * a / d;
+    (through, drop)
+}
+
+/// Power coupling `κ²` at which an all-pass ring with round-trip transmission
+/// `a` is critically coupled: the through port is then zero on resonance.
+/// `κ² = 1 − a²`. Returns `None` when `a` is outside `(0, 1]`.
+#[must_use]
+pub fn ring_critical_coupling(a: f64) -> Option<f64> {
+    (a.is_finite() && a > 0.0 && a <= 1.0).then_some(1.0 - a * a)
+}
+
+/// Finesse of a ring with round-trip power-amplitude product `x = r1·r2·a`:
+/// `F = π√x / (1 − x)`. Returns `None` unless `0 < x < 1`.
+#[must_use]
+pub fn ring_finesse(x: f64) -> Option<f64> {
+    (x.is_finite() && x > 0.0 && x < 1.0).then(|| core::f64::consts::PI * libm::sqrt(x) / (1.0 - x))
+}
+
+#[cfg(test)]
+mod ring_transfer_tests {
+    use super::*;
+
+    #[test]
+    fn all_pass_is_critically_coupled_on_resonance() {
+        // With r = a, the through port is exactly zero on resonance.
+        let a = 0.9;
+        let kappa2 = ring_critical_coupling(a).unwrap();
+        let r = libm::sqrt(1.0 - kappa2);
+        assert!(ring_all_pass_through(r, a, 0.0).abs() < 1e-12);
+        // Off resonance the through port transmits.
+        assert!(ring_all_pass_through(r, a, 0.3) > 0.01);
+    }
+
+    #[test]
+    fn lossless_add_drop_conserves_power() {
+        let (r1, r2) = (0.9_f64, 0.8_f64);
+        for &phi in &[0.0, 0.4, 1.3, 2.9] {
+            let (t, d) = ring_add_drop(r1, r2, 1.0, phi);
+            assert!((t + d - 1.0).abs() < 1e-12, "φ={phi}: {t} + {d}");
+        }
+    }
+
+    #[test]
+    fn lossy_add_drop_never_creates_power() {
+        let (r1, r2, a) = (0.9_f64, 0.9, 0.95);
+        for &phi in &[0.0, 0.7, 2.0] {
+            let (t, d) = ring_add_drop(r1, r2, a, phi);
+            assert!(t >= 0.0 && d >= 0.0 && t + d <= 1.0 + 1e-12, "{t} {d}");
+        }
+    }
+
+    #[test]
+    fn add_drop_with_no_drop_coupler_is_the_all_pass() {
+        // r2 = 1 means the second coupler is absent.
+        let (r, a, phi) = (0.85, 0.92, 0.6);
+        let (t, d) = ring_add_drop(r, 1.0, a, phi);
+        assert!((t - ring_all_pass_through(r, a, phi)).abs() < 1e-12);
+        assert_eq!(d, 0.0);
+    }
+
+    #[test]
+    fn finesse_is_pi_root_x_over_one_minus_x() {
+        let f = ring_finesse(0.81).unwrap();
+        assert!((f - core::f64::consts::PI * 0.9 / 0.19).abs() < 1e-12);
+        assert!(ring_finesse(1.0).is_none());
+    }
+}

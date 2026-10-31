@@ -188,7 +188,7 @@ pub fn supercell_te_freqs(
             h[i * n + j] = (px * qx + py * qy) * eta.get(gxi - gxj, gyi - gyj);
         }
     }
-    let w = symmetric_eigenvalues(&mut h, n);
+    let w = symmetric_eigenvalues(&mut h, n).map_err(|_| SupercellError::NoConvergence)?;
     Ok(w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect())
 }
 
@@ -239,7 +239,7 @@ pub fn supercell_tm_freqs(
             c[j * n + i] = s;
         }
     }
-    let w = symmetric_eigenvalues(&mut c, n);
+    let w = symmetric_eigenvalues(&mut c, n).map_err(|_| SupercellError::NoConvergence)?;
     Ok(w.iter().map(|lam| sqrt(lam.max(0.0)) / TAU).collect())
 }
 
@@ -291,6 +291,9 @@ pub enum SupercellError {
     /// The eigensolver returned a non-finite frequency. Such values are never
     /// dropped silently, because that would hide a broken spectrum.
     NonFiniteFrequency,
+    /// The eigensolver did not converge, usually because a matrix entry was
+    /// not finite.
+    NoConvergence,
     /// The permittivity matrix lost positive-definiteness in the Cholesky
     /// factorisation. The problem is then not a valid generalised eigenproblem.
     NotPositiveDefinite,
@@ -303,6 +306,7 @@ impl core::fmt::Display for SupercellError {
             Self::NonFiniteFrequency => {
                 write!(f, "supercell eigensolver gave a non-finite frequency")
             }
+            Self::NoConvergence => write!(f, "supercell eigensolver did not converge"),
             Self::NotPositiveDefinite => write!(
                 f,
                 "permittivity matrix is not positive definite (check rod epsilon and overlap)"

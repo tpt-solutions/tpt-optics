@@ -65,19 +65,87 @@ pub type IndexFn<'a> = dyn Fn(f64, f64) -> f64 + Sync + 'a;
 /// Returns `(beta, field)`. The field is scaled so that its entry of largest
 /// magnitude is +1.
 ///
+/// The dense solver needs `n²` entries, so meshes with more nodes are refused.
+pub const MAX_FEM_NODES: usize = 1_500;
+
+/// Relative residual `‖Ax − λBx‖ / (‖Ax‖ + |λ|‖Bx‖)` above which the mode is
+/// reported as not converged.
+pub const FEM_RESIDUAL_TOL: f64 = 1e-6;
+
+/// Errors from the scalar FEM mode solver.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum FemError {
+    /// The domain has no cells, or a non-positive or non-finite size.
+    InvalidDomain,
+    /// The mesh has more nodes than [`MAX_FEM_NODES`].
+    TooLarge {
+        /// Number of nodes of the mesh.
+        nodes: usize,
+    },
+    /// The shifted matrix is singular or the iterate vanished, at this
+    /// inverse-iteration step.
+    Singular {
+        /// Zero-based iteration index.
+        iteration: usize,
+    },
+    /// The final eigenpair has a relative residual above [`FEM_RESIDUAL_TOL`].
+    NotConverged {
+        /// The residual reached.
+        residual: f64,
+    },
+}
+
+impl core::fmt::Display for FemError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidDomain => write!(f, "FEM domain has no cells or a bad size"),
+            Self::TooLarge { nodes } => write!(
+                f,
+                "FEM mesh has {nodes} nodes (limit {MAX_FEM_NODES}); coarsen it"
+            ),
+            Self::Singular { iteration } => write!(
+                f,
+                "FEM shifted matrix is singular at inverse-iteration step {iteration}"
+            ),
+            Self::NotConverged { residual } => write!(
+                f,
+                "FEM mode did not converge (relative residual {residual:e})"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for FemError {}
+
 /// * `sigma` — shift for inverse iteration, ≈ (k0·n_avg)² (use the
 ///   provided default from [`fundamental_shift`]).
+///
+/// # Errors
+///
+/// [`FemError`] for an invalid or oversized domain, a singular shift, or an
+/// eigenpair whose residual is above [`FEM_RESIDUAL_TOL`].
 pub fn fem_fundamental_mode(
     domain: &RectDomain,
     index: &IndexFn<'_>,
     wl: Wavelength,
     iterations: usize,
-) -> (f64, Vec<f64>) {
+) -> Result<(f64, Vec<f64>), FemError> {
+    let finite_positive = |v: f64| v.is_finite() && v > 0.0;
+    if domain.nx == 0
+        || domain.ny == 0
+        || !finite_positive(domain.width)
+        || !finite_positive(domain.height)
+    {
+        return Err(FemError::InvalidDomain);
+    }
+    let n = domain.nodes();
+    if n > MAX_FEM_NODES {
+        return Err(FemError::TooLarge { nodes: n });
+    }
     // Eigenproblem (scalar, weak guidance): with E(x,y)·e^{iβz},
     //   ∇ₜ²E + (k0²n² − β²)E = 0
     // in weak form: (k0²·Mn − S)·x = β²·M·x, where S = ∫∇φᵢ·∇φⱼ,
     // Mn = ∫n²φᵢφⱼ, M = ∫φᵢφⱼ. Guided modes are the LARGEST β².
-    let n = domain.nodes();
     let k0 = wl.wavenumber();
     let dx = domain.width / domain.nx as f64;
     let dy = domain.height / domain.ny as f64;
@@ -182,12 +250,12 @@ pub fn fem_fundamental_mode(
             m
         };
         let Some(lu) = LuFactor::new(s_mat, n) else {
-            break;
+            return Err(FemError::Singular { iteration: it });
         };
         x = lu.solve(&rhs);
         let norm = sqrt(x.iter().map(|v| v * v).sum());
         if norm <= 0.0 || !norm.is_finite() {
-            break;
+            return Err(FemError::Singular { iteration: it });
         }
         for v in &mut x {
             *v /= norm;
@@ -210,10 +278,29 @@ pub fn fem_fundamental_mode(
     let den: f64 = x.iter().zip(bt.iter()).map(|(v, w)| v * w).sum();
     let lambda = if den > 0.0 { num / den } else { 0.0 };
 
+    // The eigenpair must satisfy Ax = λBx. Check it, so an iteration that
+    // stopped early is reported rather than returned as a mode.
+    let residual_vec: Vec<f64> = at
+        .iter()
+        .zip(&bt)
+        .map(|(a_x, b_x)| a_x - lambda * b_x)
+        .collect();
+    let r_norm = sqrt(residual_vec.iter().map(|v| v * v).sum());
+    let scale = sqrt(at.iter().map(|v| v * v).sum::<f64>())
+        + libm::fabs(lambda) * sqrt(bt.iter().map(|v| v * v).sum::<f64>());
+    let residual = if scale > 0.0 {
+        r_norm / scale
+    } else {
+        f64::INFINITY
+    };
+    if residual.is_nan() || residual > FEM_RESIDUAL_TOL {
+        return Err(FemError::NotConverged { residual });
+    }
+
     // β² = λ → guide β.
     let beta = sqrt(lambda.max(0.0));
     normalise_field(&mut x);
-    (beta, x)
+    Ok((beta, x))
 }
 
 /// Fixes the sign of an eigenvector and scales it to unit peak amplitude.
@@ -285,7 +372,7 @@ mod tests {
             ny: 96,
         };
         let idx = slab_index(h, n_core, n_clad, 4e-6);
-        let (beta_fem, field) = fem_fundamental_mode(&domain, &idx, wl(1550.0), 30);
+        let (beta_fem, field) = fem_fundamental_mode(&domain, &idx, wl(1550.0), 30).unwrap();
 
         let slab = crate::slab::SlabLayer {
             n_core,
@@ -305,6 +392,45 @@ mod tests {
         // And decaying into the cladding.
         let edge = field[(domain.nx / 2) * (domain.ny + 1) + 4];
         assert!(edge < 0.3, "cladding amplitude {edge}");
+    }
+
+    #[test]
+    fn fem_weak_guide_finds_fundamental_slab_mode() {
+        // Weak guide (index contrast 0.7 %). The x walls are Dirichlet, so the
+        // box width adds a transverse term (π/W)² to k0²; W must be wide
+        // compared with the guidance (n_eff² − n_clad²)·k0², or the test
+        // measures the box, not the mode.
+        let (h, n_core, n_clad) = (8.0e-6, 1.46, 1.45);
+        let lambda = wl(1550.0);
+        // Square cells (1 µm): a stretched mesh gives a poor discrete operator.
+        let domain = RectDomain {
+            width: 16e-6,
+            height: 4.0 * h,
+            nx: 16,
+            ny: 32,
+        };
+        let idx = slab_index(h, n_core, n_clad, 2.0 * h);
+        let (beta_fem, field) = fem_fundamental_mode(&domain, &idx, lambda, 40).unwrap();
+        // A box mode lies within a few per cent of the guided mode, so require
+        // a guided mode and a tight β tolerance (the error here is ~0.1 %).
+        assert!(
+            beta_fem > lambda.wavenumber() * n_clad,
+            "FEM mode is not guided: β {beta_fem}"
+        );
+
+        let slab = crate::slab::SlabLayer {
+            n_core,
+            n_clad,
+            thickness: h,
+        };
+        let modes = crate::slab::slab_modes(&slab, lambda, crate::slab::SlabPolarization::Te);
+        let beta_ref = modes[0].n_eff * lambda.wavenumber();
+        assert!(
+            (beta_fem - beta_ref).abs() < 0.01 * beta_ref,
+            "FEM β {beta_fem} vs slab β {beta_ref}"
+        );
+        let center = field[(domain.nx / 2) * (domain.ny + 1) + domain.ny / 2];
+        assert!(center > 0.8, "center amplitude {center}");
     }
 
     #[test]
@@ -332,7 +458,47 @@ mod tests {
         // (moved here from phc tests if needed) identity already diagonal.
         let mut a = vec![1.0, 0.0, 0.0, 2.0];
         let mut w = [0.0; 2];
-        super::super::phc::jacobi_eigen(&mut a, &mut w);
+        super::super::phc::jacobi_eigen(&mut a, &mut w).unwrap();
         assert!(close(w[0], 1.0, 1e-12) && close(w[1], 2.0, 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod error_path_tests {
+    use super::*;
+
+    fn flat(_x: f64, _y: f64) -> f64 {
+        1.5
+    }
+
+    #[test]
+    fn empty_mesh_is_an_invalid_domain() {
+        let domain = RectDomain {
+            width: 1e-5,
+            height: 1e-5,
+            nx: 0,
+            ny: 4,
+        };
+        let wl = Wavelength::from_um(1.55);
+        assert_eq!(
+            fem_fundamental_mode(&domain, &flat, wl, 10),
+            Err(FemError::InvalidDomain)
+        );
+    }
+
+    #[test]
+    fn oversized_mesh_is_refused_before_allocation() {
+        // 50×50 cells is 2601 nodes, above the dense limit of 1500.
+        let domain = RectDomain {
+            width: 1e-5,
+            height: 1e-5,
+            nx: 50,
+            ny: 50,
+        };
+        let wl = Wavelength::from_um(1.55);
+        assert!(matches!(
+            fem_fundamental_mode(&domain, &flat, wl, 10),
+            Err(FemError::TooLarge { nodes: 2601 })
+        ));
     }
 }

@@ -25,7 +25,7 @@ fn modes(c: &mut Criterion) {
     let mut group = c.benchmark_group("modes");
     group.sample_size(10);
     group.bench_function("scalar_fem_16x16", |b| {
-        b.iter(|| fem_fundamental_mode(black_box(&domain), &channel, wl, 30));
+        b.iter(|| fem_fundamental_mode(black_box(&domain), &channel, wl, 30).unwrap());
     });
     group.bench_function("vector_fem_16x16", |b| {
         b.iter(|| vector_mode_neff(black_box(&domain), &channel, wl, 2.4, 30));

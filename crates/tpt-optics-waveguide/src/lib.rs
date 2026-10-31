@@ -35,12 +35,16 @@ pub mod phc;
 pub mod presets;
 pub mod slab;
 pub mod supercell;
+pub mod thin_film;
 pub mod vector_fem;
 
 pub mod prelude {
     //! Convenience re-export of the most-used waveguide types.
 
-    pub use crate::coupled::{coupler_power, grating_reflectivity, ring_fsr, ring_resonances};
+    pub use crate::coupled::{
+        coupler_power, grating_reflectivity, ring_add_drop, ring_all_pass_through,
+        ring_critical_coupling, ring_finesse, ring_fsr, ring_resonances,
+    };
     pub use crate::devices::{awg_response, mzi_transmission};
     pub use crate::eim::channel_wguide_neff;
     pub use crate::fem::{fem_fundamental_mode, RectDomain};

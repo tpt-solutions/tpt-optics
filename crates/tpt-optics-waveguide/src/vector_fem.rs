@@ -491,7 +491,7 @@ mod tests {
             nx: 8,
             ny: 16,
         };
-        let (beta, _) = fem_fundamental_mode(&domain, index_ref, wl, 80);
+        let (beta, _) = fem_fundamental_mode(&domain, index_ref, wl, 80).unwrap();
         let scalar = beta / wl.wavenumber();
         let vector = vector_mode_neff(&domain, index_ref, wl, scalar, 60)
             .unwrap()

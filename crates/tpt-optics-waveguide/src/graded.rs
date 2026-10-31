@@ -29,7 +29,7 @@ use alloc::vec::Vec;
 use libm::sqrt;
 use tpt_optics_core::Wavelength;
 
-use crate::eigen::symmetric_eigenvalues;
+use crate::eigen::{symmetric_eigenvalues, EigenError};
 use crate::fiber::LpMode;
 
 /// Radial grid size used by [`graded_lp_modes`].
@@ -40,6 +40,11 @@ pub const DEFAULT_RADIAL_POINTS: usize = 200;
 /// `alpha` is the profile exponent (`2` = parabolic, large values approach a
 /// step index). `n_radial` is the number of radial grid cells; use
 /// [`DEFAULT_RADIAL_POINTS`] unless convergence is being checked.
+///
+/// # Errors
+///
+/// [`EigenError`] when the radial eigenproblem does not converge, which
+/// happens for non-finite inputs.
 pub fn graded_lp_modes(
     core_radius: f64,
     n_core: f64,
@@ -48,12 +53,12 @@ pub fn graded_lp_modes(
     wl: Wavelength,
     l_max: u32,
     n_radial: usize,
-) -> Vec<LpMode> {
+) -> Result<Vec<LpMode>, EigenError> {
     let k0 = wl.wavenumber();
     let (n1s, n2s) = (n_core * n_core, n_clad * n_clad);
     let barrier = k0 * k0 * (n1s - n2s);
     if barrier <= 0.0 || n_radial < 4 || alpha <= 0.0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let a = core_radius;
     let big_r = 4.0 * a;
@@ -66,7 +71,8 @@ pub fn graded_lp_modes(
 
     let mut modes: Vec<LpMode> = Vec::new();
     for l in 0..=l_max {
-        let ll = (l * l) as f64;
+        // Widen before multiplying: `l * l` in u32 overflows for l > 65535.
+        let ll = f64::from(l) * f64::from(l);
         // Symmetric form of the r-weighted operator: K u = E·diag(r) u.
         let mut k = vec![0.0; n_radial * n_radial];
         for i in 0..n_radial {
@@ -89,7 +95,7 @@ pub fn graded_lp_modes(
             }
         }
 
-        let eig = symmetric_eigenvalues(&mut k, n_radial);
+        let eig = symmetric_eigenvalues(&mut k, n_radial)?;
 
         let mut m = 0_u32;
         for &e in &eig {
@@ -109,7 +115,7 @@ pub fn graded_lp_modes(
             });
         }
     }
-    modes
+    Ok(modes)
 }
 
 /// `x^p` for `x ≥ 0`, saturating at 1 for `x ≥ 1` (the cladding plateau).
@@ -145,7 +151,7 @@ mod tests {
         let e_exact = 2.0 * omega;
         let n_exact = sqrt(n1 * n1 - e_exact / (k0 * k0));
 
-        let modes = graded_lp_modes(a, n1, n2, 2.0, w, 0, DEFAULT_RADIAL_POINTS);
+        let modes = graded_lp_modes(a, n1, n2, 2.0, w, 0, DEFAULT_RADIAL_POINTS).unwrap();
         assert_ne!(modes.len(), 0);
         let ground = modes[0];
         assert_eq!((ground.l, ground.m), (0, 1));
@@ -163,7 +169,7 @@ mod tests {
         let (a, n1, n2) = (4.1e-6, 1.4515, 1.4447);
         let w = wl(1550.0);
         let step = fiber_lp_modes(a, n1, n2, w, 0);
-        let graded = graded_lp_modes(a, n1, n2, 40.0, w, 0, DEFAULT_RADIAL_POINTS);
+        let graded = graded_lp_modes(a, n1, n2, 40.0, w, 0, DEFAULT_RADIAL_POINTS).unwrap();
         assert_eq!(step.len(), 1);
         assert_eq!(graded.len(), 1, "{graded:?}");
         assert!(
@@ -179,7 +185,7 @@ mod tests {
         // Same core/cladding: a parabolic profile guides modes whose β
         // decreases with order; ordering within each l must be monotone.
         let (a, n1, n2) = (25e-6, 1.456, 1.44);
-        let modes = graded_lp_modes(a, n1, n2, 2.0, wl(850.0), 3, DEFAULT_RADIAL_POINTS);
+        let modes = graded_lp_modes(a, n1, n2, 2.0, wl(850.0), 3, DEFAULT_RADIAL_POINTS).unwrap();
         assert!(modes.len() > 4, "{} modes", modes.len());
         for l in 0..=3 {
             let mut prev = f64::INFINITY;
@@ -193,8 +199,23 @@ mod tests {
     #[test]
     fn zero_contrast_has_no_modes() {
         assert_eq!(
-            graded_lp_modes(5e-6, 1.444, 1.444, 2.0, wl(1550.0), 1, 64).len(),
+            graded_lp_modes(5e-6, 1.444, 1.444, 2.0, wl(1550.0), 1, 64)
+                .unwrap()
+                .len(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod nonfinite_tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_core_radius_is_an_error_not_modes() {
+        // A NaN radius makes the matrix non-finite. The solver must refuse it
+        // rather than report modes from an unconverged iteration.
+        let wl = Wavelength::from_nm(850.0);
+        assert!(graded_lp_modes(f64::NAN, 1.5, 1.45, 2.0, wl, 1, 32).is_err());
     }
 }
