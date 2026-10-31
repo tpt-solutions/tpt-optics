@@ -79,17 +79,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run every example
+        # Every file in crates/tpt-optics/examples is run, so a new example is
+        # checked without editing this list.
+        shell: bash
         run: |
-          cargo run --release -p tpt-optics --example 01_glass_index --features full
-          cargo run --release -p tpt-optics --example 02_singlet_focal_length --features full
-          cargo run --release -p tpt-optics --example 03_lens_spot_diagram --features full
-          cargo run --release -p tpt-optics --example 04_gaussian_beam_lens --features full
-          cargo run --release -p tpt-optics --example 05_slab_fiber_modes --features full
-          cargo run --release -p tpt-optics --example 06_jones_chain --features full
-          cargo run --release -p tpt-optics --example 07_import_zmx_optimize_export --features full
-          cargo run --release -p tpt-optics --example 08_differentiable_gradient --features full
-          cargo run --release -p tpt-optics --example 09_photonic_crystal_gap --features full
-          cargo run --release -p tpt-optics --example 10_tolerance_monte_carlo --features full
+          for f in crates/tpt-optics/examples/*.rs; do
+            name=$(basename "$f" .rs)
+            echo "::group::example $name"
+            cargo run --release -p tpt-optics --example "$name" --features full
+            echo "::endgroup::"
+          done
 
   wasm:
     runs-on: ubuntu-latest
