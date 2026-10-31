@@ -34,6 +34,8 @@ tolerances the tests assert, not measurement precision.
 | Focal shift vs curvature | Finite difference | 1e-4 relative | `focal_shift_vs_curvature_matches_finite_difference` |
 | Exact gradient (dual numbers) | Central differences | 1e-4 relative | `ray_height_gradient_is_exact_against_central_differences` (`tpt-optics-design`) |
 | Analysis focus at the paraxial BFL | Through-focus search | 0.1 mm resolution | `report_matches_the_individual_measurements` (`tpt-optics-design`) |
+| EFL and BFL exact derivatives | Central differences | 1e-5 relative | `focus_gradients_match_central_differences` (`tpt-optics-geometric`) |
+| EFL and RMS-spot operand gradients | Central differences | 1e-4 relative | `efl_and_bfl_operand_gradients_are_exact`, `spot_gradient_matches_central_differences` (`tpt-optics-design`) |
 
 ## Wave optics
 
@@ -65,6 +67,7 @@ tolerances the tests assert, not measurement precision.
 | Square-rod TM band gap | (0.324, 0.447) c/a, ε = 8.9, r/a = 0.2 | ±0.02 c/a (grid dependent) | `bulk_gap_is_found_for_square_rods` |
 | Missing-rod defect level | 0.393 c/a at Γ | 0.01 c/a | `missing_rod_level_sits_in_tm_gap` |
 | Line-defect guided level | Present in the gap | existence | `line_defect_supercell_solves_and_has_a_level_in_the_gap` |
+
 | SMF-28 modes | LP11 cut off at 1550 nm, guided at 1200 nm | existence | `smf28_guides_only_the_fundamental_mode_at_1550` |
 
 ## Coupled-mode theory and design
@@ -76,7 +79,17 @@ tolerances the tests assert, not measurement precision.
 | Ring FSR | λ²/(n_g L) | ±20 % | `ring_fsr_and_resonances` |
 | Tolerance budget | Monte Carlo (400 samples) | 15 % | `linear_budget_agrees_with_monte_carlo_for_small_errors` |
 | Parallel tolerance run | Serial, same seeds | exact | `parallel_analysis_matches_the_serial_result_exactly` (feature `parallel`) |
+| Optimised triplet (100 mm) | EFL 100 mm, on-axis spot below 20 µm | 0.5 mm, 20 µm | `optimised_triplet_has_its_focal_length_and_a_small_axial_spot` (`tpt-optics-geometric`) |
 | Sobol first block | 1-D stratification | exact | `sobol_first_block_is_stratified_in_every_dimension` |
+| System MTF, diffraction limit | Hopkins function at half cutoff | 0.03 | `perfect_pupil_matches_the_hopkins_curve` (`tpt-optics-design`) |
+
+## System invariants and serialisation
+
+| Quantity | Reference | Tolerance | Test |
+|---|---|---|---|
+| Trace reversibility, on axis and off axis | Retrace of the mirrored system | 1e-6 m | `a_singlet_passes_every_system_invariant` (`tpt-optics-verify`) |
+| Optical path under rotation | Invariance about the axis | 1e-9 m | same test |
+| System description round trip | Same focal length after JSON | exact | `round_trip_keeps_the_focal_length`, `json_round_trip` (`tpt-optics-geometric`, feature `serde`) |
 
 ## Known gaps
 
@@ -84,5 +97,9 @@ tolerances the tests assert, not measurement precision.
   reference file are open items in `todo.md`. No check covers them yet.
 - The Sobol direction numbers beyond the first pair are checked by
   stratification only, not by the full net property.
-- The Cooke triplet and double-Gauss presets are not in the library, so they
-  have no reference check.
+- The Cooke triplet and double-Gauss presets are not in the library. The
+  optimised 100 mm triplet is, but it is not the Cooke prescription, so it has
+  no published reference.
+- The intersection and energy checks run on a fixed grid, not over every
+  input. The grid includes the endpoints, but nothing between grid points is
+  checked.

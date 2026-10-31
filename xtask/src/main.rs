@@ -37,6 +37,7 @@ fn main() {
         ]),
         "deny" => cargo(&["deny", "check", "licenses", "sources"]),
         "nostd" => nostd(),
+        "validation" => validation(),
         "check" => {
             type Step = (&'static str, fn() -> i32);
             let steps: [Step; 5] = [
@@ -102,4 +103,58 @@ fn nostd() -> i32 {
         }
     }
     code
+}
+
+/// Check that every test name cited in `docs/VALIDATION.md` exists in the
+/// source. Names are the backticked snake_case identifiers in the page.
+fn validation() -> i32 {
+    let page = match std::fs::read_to_string("docs/VALIDATION.md") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cannot read docs/VALIDATION.md: {e}");
+            return 1;
+        }
+    };
+    let mut sources = String::new();
+    collect_rs(std::path::Path::new("crates"), &mut sources);
+    let mut missing = Vec::new();
+    let mut checked = 0;
+    for token in page.split('`').skip(1).step_by(2) {
+        let is_name = token.contains('_')
+            && token
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !is_name {
+            continue;
+        }
+        checked += 1;
+        if !sources.contains(&format!("fn {token}(")) {
+            missing.push(token.to_string());
+        }
+    }
+    if missing.is_empty() {
+        println!("validation: {checked} cited tests found");
+        0
+    } else {
+        for name in &missing {
+            eprintln!("validation: test '{name}' is cited in docs/VALIDATION.md but not found");
+        }
+        1
+    }
+}
+
+fn collect_rs(dir: &std::path::Path, out: &mut String) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                out.push_str(&text);
+            }
+        }
+    }
 }

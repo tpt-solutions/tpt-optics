@@ -19,12 +19,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      - name: Validation page matches the tests
+        run: cargo run -p xtask -- validation
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
       - name: Test with the parallel feature
-        run: cargo test -p tpt-optics-design --features parallel
+        run: cargo test -p tpt-optics-design --features parallel,serde
+      - name: Test the serde feature of the geometry crate
+        run: cargo test -p tpt-optics-geometric --features serde
       - name: no_std compatibility
         run: |
           cargo build -p tpt-optics-core --no-default-features
