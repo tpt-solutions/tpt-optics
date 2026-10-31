@@ -6,6 +6,96 @@ All notable changes to tpt-optics are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed (breaking, before the first publish)
+
+- **`tpt-optics-design`**: `tolerance::analyze`, `analyze_seeded` and
+  `analyze_parallel` return `Result<ToleranceStats, ToleranceError>`. Zero runs
+  and out-of-range parameter indices are errors, not panics.
+- **`tpt-optics-design`**: `Operand::RayHeight` has an `axis` field (`RayAxis::X`
+  or `RayAxis::Y`). It defaults to `X`, so earlier files keep their meaning. Use
+  `Y` for the meridional height, where the field angle acts. The CLI takes
+  `axis = "y"`.
+- **`tpt-optics-io`**: `text::DecodeError::InvalidUtf8` is removed. Non-UTF-8 input
+  decodes as Windows-1252. `glass::parse_agf_report` returns the catalogue and the
+  glasses skipped with their reasons; `parse_agf` drops them.
+- **`tpt-optics-geometric`**: `TunedParams::seeded` returns `Option`, and
+  `BlockReason` has an `Evanescent` variant.
+- **`tpt-optics-geometric`**: `SequentialSystem::validate` and `SystemError` are
+  new. A malformed system traces as blocked, with no points.
+
+### Fixed
+
+- **`tpt-optics-io` (zmx)**: `CURV` takes only curvature, so solve fields are no
+  longer read as asphere terms. `UNIT` (MM, CM, M, IN) is applied; inch files were
+  25.4 times too wrong. `TYPE EVENASPH` reads `PARM 1`–`7`. Quoted names and glasses
+  are unquoted. `PARM 8`, unknown `TYPE`s and an infinite middle gap are errors.
+- **`tpt-optics-io` (seq)**: `DIM`, `WL`, `EPD` and `YAN` are tolerated. `RDY`,
+  `THI` and `GLA` are errors. Inline `!` comments are stripped. A sequence without
+  `SO` is an error. Mirrors keep the ray in its medium, as the zmx reader does.
+- **`tpt-optics-io` (AGF)**: a glass with an unsupported formula no longer aborts
+  the catalogue. `TD` gives dn/dT, and `ED` no longer does. `LD` sets the validity
+  range. Errors name the glass's own `NM` line.
+- **`tpt-optics-io` (text)**: UTF-32 byte-order marks are decoded, not read as UTF-16.
+- **`tpt-optics-design`**: the LM optimiser computes the Jacobian once per accepted
+  step, counts Jacobian work in `evaluations`, stops at once on a NaN start, and
+  refuses bounds of the wrong length. `chromatic_focal_shift` returns NaN with fewer
+  than two foci, not 0, and its doc now says what it computes.
+- **`tpt-optics-geometric`**: a total internal reflection at a diffractive surface
+  is counted. An evanescent diffracted order blocks the ray. The non-sequential
+  `launched_power` sums each ray's own power.
+- **`tpt-optics-core`**: the Fresnel transmitted angle has its imaginary part under
+  TIR and absorption. A Sellmeier n² < 0 gives an absorbing index, not NaN. The glass
+  code stays six digits for a material with no dispersion.
+- **`tpt-optics-waveguide`**: the QL eigensolver returns `EigenError` at its
+  iteration cap instead of unconverged values. `symmetric_eigenvalues`,
+  `graded_lp_modes` (now `Result`) and the supercell helpers
+  (`SupercellError::NoConvergence`) report it. `graded_lp_modes` no longer
+  overflows `l*l` for large `l`. `fiber_lp_modes` scans more finely as V grows; the
+  fixed 400 points missed about a sixth of the LP₀ₘ modes at V ≈ 1500.
+- **`tpt-optics-waveguide`**: `jacobi_eigen` and `pwem_te_bands` return `Result`
+  (`EigenError` at the sweep cap), and Jacobi converges on a relative norm test.
+  `pwem_te_bands` refuses `n_k = 0`. `fem_fundamental_mode` returns `Result<_, FemError>`:
+  an empty or oversized mesh, a singular shift, or a residual above 1e-6 is an error,
+  not an unchecked mode.
+- **`tpt-optics-waveguide`** (added): `ring_all_pass_through`, `ring_add_drop`,
+  `ring_critical_coupling` and `ring_finesse`, the ring transfer functions with loss.
+- **`tpt-optics-geometric`** (added): `presets::cooke_triplet_50mm`, the Cooke triplet
+  from the final optimised prescription in the Optiland documentation (MIT). The
+  integration test checks its d-line focal length against the 50.002 mm the tutorial
+  reports. The two glasses take their datasheet d-line indices, so this is a d-line
+  check only.
+- **`tpt-optics-waveguide`** (added): `thin_film::film_response`, the s- and
+  p-polarised thin-film response at oblique incidence with complex layer and
+  substrate indices. It is checked against the Fresnel equations for a bare
+  interface, against Brewster's angle and an AR coating, and for power conservation.
+- **`tpt-optics-design`** (added): `Tolerance::TruncatedNormal`, a normal error held
+  inside a hard limit. A non-positive limit is refused with
+  `ToleranceError::InvalidTolerance`.
+- **`tpt-optics-design`**: `FieldReport` has `ray_fan_tangential`, the meridional fan
+  (pupil y against image y). `ray_fan` is the sagittal fan, and its doc said
+  "meridional" before. The JSON and CSV exports are unchanged.
+- **`tpt-optics-wave`**: evanescent components decay as `exp(−k z √(−arg))` in the
+  angular-spectrum and BPM propagators, instead of being removed (which broke
+  `z = 0`). `psf_from_pupil` panics on an empty pupil instead of returning NaN.
+  `mtf_from_psf` no longer clamps to 1. `strehl_ratio` is new: it gives the absolute
+  peak against an ideal pupil. `mode_match_thin_lens` matches the waist
+  size, not the spot size at `d_out`. The angular spectrum validates its inputs.
+- **`tpt-optics-design`**: the off-axis ray-fan OPD is relative to each field's own
+  chief ray. `wavefront_rms` returns NaN when the Zernike fit is degenerate, not the
+  unfitted RMS. The linear solve uses a pivot tolerance relative to the matrix scale.
+- **`tpt-optics-polarization`**: `partial_depolarizer` and `diattenuator` assert a
+  physical range, and the DOP is clamped to `[0, 1]` as documented.
+
+## [0.1.0] — 2026-10-31
+
+### Fixed
+
+- **`tpt-optics-waveguide`**: `fem_fundamental_mode` starts its inverse-iteration
+  shift at `(k0·n_max)²`, not `0.97·(k0·n_max)²`. The lower shift settled on a box
+  mode below the cladding index for a weak guide (n_eff 1.438 against a cladding
+  of 1.45). The regression test checks that the mode is guided and matches the
+  slab TE0 to 1 %.
+
 ### Changed (lighter verification)
 
 - Removed the Kani bounded-model-checking harnesses (`tpt-optics-verify/src/kani.rs`)
