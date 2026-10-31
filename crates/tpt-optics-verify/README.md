@@ -2,8 +2,9 @@
 
 Verification harnesses for [tpt-optics](../../README.md). The crate collects
 the optical laws the rest of the suite must obey as checkable predicates,
-reusable proptest strategies for generating physical inputs, and Kani
-bounded-model-checking harnesses for the critical algorithms.
+and reusable proptest strategies for generating physical inputs. The
+critical algorithms (ray–sphere intersection, lossless energy split) are
+checked by property tests over random inputs.
 
 - **License:** MIT OR Apache-2.0
 - **`no_std`:** the library is `#![no_std]`. It depends on proptest with its
@@ -26,9 +27,10 @@ bounded-model-checking harnesses for the critical algorithms.
     equals the index ratio
   - Ray traces through a system are reversible
   - Optical path length is invariant under frame rotation
-- **Kani harnesses.** Bounded proofs for nearest-positive-root ray-surface
-  intersection and energy conservation in a lossless beam splitter. These
-  compile only under `cfg(kani)`, so normal builds are unaffected.
+- **Bounded checks.** The hit lies ahead of the ray and on the sphere, the
+  solver returns the front surface, and a lossless split below the critical
+  angle conserves energy. These run exhaustively over a fixed grid with the
+  endpoints included (the `bounded` module), not as proofs for every input.
 
 ## Installation
 
@@ -73,8 +75,8 @@ proptest! {
 | Module | Contents |
 |---|---|
 | `strategies` | proptest generators: `f64_in`, `incident_direction`, `incident_ray`, `refractive_index`, `index_pair_descending`, `curvature`, `conic_constant`, `unit_complex`, `sellmeier_coeffs`, `d_line` |
+| `bounded` | `check`, `assert_holds`: exhaustive grid checks with endpoints always sampled |
 | `invariants` | `snell_reversible`, `snell_tangential_momentum`, `abcd_symplectic`, `abcd_refraction_det`, `trace_reversibility`, `fresnel_energy_conserved`, `opl_rotation_invariance` |
-| `kani` | Bounded-model-checking harnesses, compiled only with `cfg(kani)` |
 
 ## Running the checks
 
@@ -82,14 +84,10 @@ proptest! {
 cargo test -p tpt-optics-verify
 ```
 
-The property tests in `tests/properties.rs` exercise every invariant with
+The bounded checks in `tests/properties.rs` run on fixed grids, and
+`tests/bounded.rs` tests the checker itself. The property tests in
+`tests/properties.rs` exercise every invariant with
 randomized inputs. Proptest regression seeds are checked in alongside them.
-
-To run the Kani proofs, install the Kani verifier and run:
-
-```sh
-cargo kani -p tpt-optics-verify
-```
 
 ## Choosing tolerances
 

@@ -21,7 +21,7 @@ features, so you compile only the parts you use.
 - Optical design: merit functions, damped least squares, simulated annealing,
   genetic optimization and Monte-Carlo tolerancing
 - File formats: Zemax `.zmx` text, CODE V `.seq`, AGF glass catalogs
-- Verification: proptest strategies, optical invariants and Kani harnesses
+- Verification: proptest strategies and optical invariants
 
 Everything is written from scratch in Rust, with no C or C++ FFI and no
 external optical solver.
@@ -51,7 +51,7 @@ tpt-optics = { version = "0.1", default-features = false, features = ["core", "p
 | `waveguide` | [`tpt-optics-waveguide`](../tpt-optics-waveguide) | Slab and fiber modes, EIM, coupled-mode theory, photonic crystals, FEM |
 | `design` | [`tpt-optics-design`](../tpt-optics-design) | Merit functions, optimizers, tolerancing, wavefront fit. Also enables `geometric`. |
 | `io` | [`tpt-optics-io`](../tpt-optics-io) | Zemax `.zmx`, CODE V `.seq`, AGF glass catalogs. Also enables `geometric`. |
-| `verify` | [`tpt-optics-verify`](../tpt-optics-verify) | proptest strategies, optical invariants, Kani harnesses. Also enables `geometric` and `polarization`. |
+| `verify` | [`tpt-optics-verify`](../tpt-optics-verify) | proptest strategies and optical invariants. Also enables `geometric` and `polarization`. |
 | `full` | all of the above | Every feature |
 
 Each subcrate is re-exported under its own name, for example

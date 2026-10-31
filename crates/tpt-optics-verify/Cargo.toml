@@ -1,6 +1,6 @@
 [package]
 name = "tpt-optics-verify"
-description = "Verification harnesses for tpt-optics: proptest strategies, optical invariants and Kani bounded-model-checking harnesses"
+description = "Verification for tpt-optics: proptest strategies and optical invariants"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-keywords = ["proptest", "kani", "formal-verification", "property-testing", "optics"]
+keywords = ["proptest", "property-testing", "verification", "optics"]
 categories = ["development-tools::testing", "science", "no-std"]
 readme = "README.md"
 

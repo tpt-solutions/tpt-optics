@@ -143,7 +143,13 @@ pub fn trace_reversibility(
     let Some(dir) = tpt_optics_core::Vec3::new(-e.x, -e.y, e.z).normalized() else {
         return Ok(());
     };
-    let origin = tpt_optics_core::Vec3::new(last.x, last.y, 0.0) - dir * 1e-6;
+    // The mirrored frame puts the last surface's vertex plane at z' = 0. The
+    // traced point lies on that surface, `vertex_last − last.z` away from the
+    // vertex plane, so the retrace must start there. Starting on the plane
+    // ignores the sag of a curved last surface, which is what made the retrace
+    // disagree off axis.
+    let vertex_last: f64 = system.thickness[..n - 1].iter().sum();
+    let origin = tpt_optics_core::Vec3::new(last.x, last.y, vertex_last - last.z) - dir * 1e-6;
     let back_ray = Ray::new(origin, dir);
     let back = rev.trace(&back_ray, ctx);
     if back.blocked {

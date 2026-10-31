@@ -55,24 +55,23 @@ fn rays() -> [(&'static str, Ray<f64>); 3] {
 #[must_use]
 pub fn verify_system(system: &SequentialSystem, ctx: TraceContext) -> Vec<InvariantCheck> {
     let mut out = Vec::new();
-    // Reversibility is checked on axis only. The retrace in
-    // `trace_reversibility` is approximate for off-axis rays: on a singlet it
-    // leaves about 20 µm of path at 2 mm off axis. The forward trace itself is
-    // consistent with its segment lengths there, so the gap is in the retrace.
-    let (axis_label, axis_ray) = rays().into_iter().next().expect("rays are non-empty");
-    let _ = axis_label;
-    out.push(to_check(
-        "trace reversibility (on-axis ray)",
-        trace_reversibility(system, &axis_ray, ctx, 1e-6),
-    ));
     for (label, ray) in rays() {
-        let name = match label {
+        let reversal_name = match label {
+            "on-axis ray" => "trace reversibility (on-axis ray)",
+            "2 mm off-axis ray" => "trace reversibility (2 mm off-axis ray)",
+            _ => "trace reversibility (2° tilted ray)",
+        };
+        out.push(to_check(
+            reversal_name,
+            trace_reversibility(system, &ray, ctx, 1e-6),
+        ));
+        let rotation_name = match label {
             "on-axis ray" => "optical path invariant under rotation (on-axis ray)",
             "2 mm off-axis ray" => "optical path invariant under rotation (2 mm off-axis ray)",
             _ => "optical path invariant under rotation (2° tilted ray)",
         };
         out.push(to_check(
-            name,
+            rotation_name,
             opl_rotation_invariance(system, &ray, ctx, 0.7, 1e-9),
         ));
     }
@@ -128,7 +127,7 @@ mod tests {
     #[test]
     fn a_singlet_passes_every_system_invariant() {
         let checks = verify_system(&singlet(), ctx());
-        assert_eq!(checks.len(), 4);
+        assert_eq!(checks.len(), 6);
         assert!(checks.iter().all(|c| c.passed), "{checks:#?}");
     }
 }

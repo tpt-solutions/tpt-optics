@@ -2,10 +2,13 @@
 //! exercising the shared strategies and invariants.
 
 use proptest::prelude::*;
+use tpt_optics_core::fresnel;
 use tpt_optics_core::{Kelvin, Matrix2, Vec3};
 use tpt_optics_geometric::abcd;
+use tpt_optics_geometric::prelude::{Ray, Sphere};
 use tpt_optics_geometric::sequential::{Medium, SeqSurface, SequentialSystem};
-use tpt_optics_geometric::surface::Asphere;
+use tpt_optics_geometric::surface::{Asphere, OpticalSurface};
+use tpt_optics_verify::bounded::{self, Axis};
 use tpt_optics_verify::invariants as inv;
 use tpt_optics_verify::strategies as strat;
 
@@ -95,6 +98,85 @@ proptest! {
         );
         inv::opl_rotation_invariance(&sys, &ray, ctx, azimuth, 1e-9).map_err(proptest::test_runner::TestCaseError::fail)?;
     }
+}
+
+// The intersection and energy checks run on fixed grids, so every point is
+// checked on every run and a failure names its exact input.
+#[test]
+fn sphere_hit_is_ahead_and_on_surface() {
+    bounded::assert_holds(
+        [
+            Axis::new(1.0, 10.0, 10),
+            Axis::new(-3.5, 3.5, 8),
+            Axis::new(-3.5, 3.5, 8),
+            Axis::new(-100.0, -1e-3, 6),
+            Axis::new(0.5, 1.0, 4),
+        ],
+        |[curvature, ox, oy, oz, dz]| {
+            let ray = Ray::new(Vec3::new(ox, oy, oz), Vec3::new(0.0, 0.0, dz));
+            let Some(hit) = Sphere::new(curvature).intersect(&ray, 1e-9) else {
+                return Ok(());
+            };
+            if hit.t <= 0.0 {
+                return Err(format!("hit parameter {} not positive", hit.t));
+            }
+            // |p − C|² = R² with the centre C = (0, 0, R).
+            let r = 1.0 / curvature;
+            let (px, py, pz) = (hit.point.x, hit.point.y, hit.point.z - r);
+            let residual = px * px + py * py + pz * pz - r * r;
+            if residual.abs() >= 1e-6 * r * r {
+                return Err(format!("off the sphere by {residual}"));
+            }
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn sphere_returns_the_nearest_positive_root() {
+    bounded::assert_holds(
+        [Axis::new(0.5, 5.0, 10), Axis::new(0.0, 1.0, 12)],
+        |[r, u]| {
+            // z0 in (−2r, −1e-3): in front of the vertex, inside the sphere's span.
+            let z0 = -(1e-3 + u * (2.0 * r - 2e-3));
+            let ray = Ray::new(Vec3::new(0.0, 0.0, z0), Vec3::new(0.0, 0.0, 1.0));
+            match Sphere::new(1.0 / r).intersect(&ray, 1e-9) {
+                Some(hit) if hit.point.z < -1e-9 || hit.point.z >= r => Err(format!(
+                    "hit at z = {} is not the front surface",
+                    hit.point.z
+                )),
+                _ => Ok(()),
+            }
+        },
+    );
+}
+
+#[test]
+fn lossless_split_conserves_energy_below_tir() {
+    bounded::assert_holds(
+        [
+            Axis::new(1.0, 2.0, 11),
+            Axis::new(0.0, 0.999, 8),
+            Axis::new(0.0, 0.999, 12),
+        ],
+        |[n1, f, sin_t]| {
+            let n2 = 1.0 + (n1 - 1.0) * f;
+            let theta = sin_t.asin();
+            match fresnel::critical_angle(n1, n2) {
+                Some(crit) if theta < crit => {
+                    let (rs, rp, ts, tp) = fresnel::fresnel_energy(n1, n2, theta);
+                    if (rs + ts - 1.0).abs() >= 1e-9 {
+                        return Err(format!("s: R + T = {}", rs + ts));
+                    }
+                    if (rp + tp - 1.0).abs() >= 1e-9 {
+                        return Err(format!("p: R + T = {}", rp + tp));
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
+            }
+        },
+    );
 }
 
 fn thin(f: f64) -> Matrix2<f64> {

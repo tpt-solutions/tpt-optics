@@ -21,7 +21,7 @@
 //! | `waveguide` | [`tpt_optics_waveguide`] | slab/fiber modes, EIM, CMT, photonic crystals, FEM |
 //! | `design` | [`tpt_optics_design`] | merit functions, DLS/SA/GA optimizers, tolerancing |
 //! | `io` | [`tpt_optics_io`] | Zemax `.zmx`, CODE V `.seq`, AGF glass catalogs |
-//! | `verify` | [`tpt_optics_verify`] | proptest strategies, optical invariants, Kani harnesses |
+//! | `verify` | [`tpt_optics_verify`] | proptest strategies and optical invariants |
 //!
 //! [`tpt_optics_core`]: tpt_optics_core
 //! [`tpt_optics_geometric`]: tpt_optics_geometric
