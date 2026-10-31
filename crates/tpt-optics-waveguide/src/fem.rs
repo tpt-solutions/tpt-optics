@@ -216,7 +216,7 @@ pub fn fem_fundamental_mode(
         }
         (k0 * n_max) * (k0 * n_max)
     };
-    let mut sigma = 0.97 * k0_core_sq;
+    let mut sigma = k0_core_sq;
     let mut x = alloc::vec![0.0; n];
     {
         // Seed: Gaussian at the domain center, localized over ~1/6 width.
