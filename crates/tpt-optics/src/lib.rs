@@ -75,9 +75,12 @@ pub mod prelude {
         analysis::analyze,
         check::self_check,
         glassmap::rank_achromats,
-        operands::{optimize_system, Operand},
+        merit::{chromatic_focal_shift, distortion, rms_spot},
+        operands::{optimize_system, Operand, RayAxis},
+        optimize::{damped_least_squares, genetic_minimize, simulated_annealing, StopReason},
         params::ParamSet,
         sweep::{grid, latin_hypercube, sobol},
+        tolerance::{Tolerance, ToleranceError, ToleranceStats},
     };
     #[cfg(feature = "geometric")]
     pub use tpt_optics_geometric::prelude::*;

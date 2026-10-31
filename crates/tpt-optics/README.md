@@ -17,7 +17,8 @@ features, so you compile only the parts you use.
 - Wave optics: FFT, diffraction, Gaussian beams, beam propagation, PSF and MTF
 - Polarization: Jones, Mueller and Stokes calculus
 - Photonics: slab and fiber modes, effective index method, coupled-mode theory,
-  photonic crystals, integrated devices, a scalar FEM mode solver
+  photonic crystals and defects, thin-film stacks, integrated devices, scalar
+  and full-vector FEM mode solvers
 - Optical design: merit functions, damped least squares, simulated annealing,
   genetic optimization and Monte-Carlo tolerancing
 - File formats: Zemax `.zmx` text, CODE V `.seq`, AGF glass catalogs
@@ -73,10 +74,14 @@ let n = bk7.index(wl).re();
 assert!((n - 1.5151).abs() < 1e-4);
 ```
 
-The prelude re-exports the common items of the `core`, `geometric`,
-`polarization`, `wave` and `waveguide` subcrates. The `design`, `io` and
-`verify` crates have no prelude. Use their module paths, for example
-`tpt_optics::design::optimize::damped_least_squares`.
+The prelude re-exports the common items of the enabled `core`, `geometric`,
+`polarization`, `wave` and `waveguide` subcrates. It also re-exports the
+everyday `design` items, such as `analyze`, `rms_spot`, `damped_least_squares`
+and `Tolerance`, and the `io` catalog and file modules `reference_catalog`,
+`seq` and `zmx`. Everything else in `design` and `io` is reached by module
+path, for example `tpt_optics::design::optimize::damped_least_squares` or
+`tpt_optics::io::glass::parse_agf`. The `verify` crate has no prelude, so use
+`tpt_optics::verify`.
 
 ## `no_std`
 
