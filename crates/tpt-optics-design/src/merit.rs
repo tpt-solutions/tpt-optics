@@ -44,6 +44,33 @@ pub fn chromatic_focal_shift(system: &SequentialSystem, contexts: &[TraceContext
     max - min
 }
 
+/// Lateral colour at a field angle: the spread (max − min) of the chief-ray
+/// image height in the meridional plane over the wavelengths in `contexts`.
+///
+/// The chief ray is the one through pupil height zero, launched at
+/// `field_deg`. Returns NaN when fewer than two wavelengths reach the image
+/// plane, because no spread is defined then.
+#[must_use]
+pub fn lateral_colour(system: &SequentialSystem, contexts: &[TraceContext], field_deg: f64) -> f64 {
+    let ray = tpt_optics_geometric::sequential::field_ray(0.0, field_deg);
+    let mut heights: Vec<f64> = Vec::with_capacity(contexts.len());
+    for &ctx in contexts {
+        let res = system.trace(&ray, ctx);
+        if res.blocked {
+            continue;
+        }
+        if let Some(p) = res.points.last() {
+            heights.push(p.y);
+        }
+    }
+    if heights.len() < 2 {
+        return f64::NAN;
+    }
+    let max = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let min = heights.iter().copied().fold(f64::INFINITY, f64::min);
+    max - min
+}
+
 /// Relative distortion at a field angle: the real chief-ray image height
 /// versus the paraxial chief-ray height, `(y_img − y_ideal)/y_ideal`.
 ///
@@ -239,5 +266,46 @@ mod distortion_focus_tests {
             d.abs() < 0.05,
             "focused distortion at 2°: {d}, bfl {bfl}, efl {efl:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod lateral_colour_tests {
+    use super::*;
+    use tpt_optics_core::material::{ConstIndex, Material, MaterialDatabase};
+    use tpt_optics_core::units::REFERENCE_TEMPERATURE;
+    use tpt_optics_core::{Kelvin, Wavelength};
+    use tpt_optics_geometric::presets::singlet;
+
+    fn at(nm: f64) -> TraceContext {
+        TraceContext {
+            wavelength: Wavelength::from_nm(nm),
+            temperature: Kelvin::from_celsius(20.0),
+        }
+    }
+
+    #[test]
+    fn constant_index_lens_has_no_lateral_colour() {
+        let mut db = MaterialDatabase::presets();
+        db.insert(Material::new(
+            "flat15",
+            alloc::boxed::Box::new(ConstIndex(1.5)),
+            0.0,
+            REFERENCE_TEMPERATURE,
+        ));
+        let sys = singlet(&db, 100e-3, -100e-3, 12.5e-3, 5e-3, "flat15", 95e-3).unwrap();
+        let c = lateral_colour(&sys, &[at(486.1), at(656.3)], 5.0);
+        assert!(c.abs() < 1e-12, "{c}");
+    }
+
+    #[test]
+    fn dispersive_lens_shows_lateral_colour_off_axis() {
+        let db = MaterialDatabase::presets();
+        let sys = singlet(&db, 100e-3, -100e-3, 12.5e-3, 5e-3, "bk7", 95e-3).unwrap();
+        let c = lateral_colour(&sys, &[at(486.1), at(656.3)], 5.0);
+        assert!(c.is_finite() && c.abs() > 1e-8, "{c}");
+        // On axis the chief ray has no lateral image height at all.
+        let on_axis = lateral_colour(&sys, &[at(486.1), at(656.3)], 0.0);
+        assert!(on_axis.abs() < 1e-12, "{on_axis}");
     }
 }

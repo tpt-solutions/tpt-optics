@@ -534,3 +534,94 @@ mod truncated_tests {
         assert_eq!(result, Err(ToleranceError::InvalidTolerance { index: 0 }));
     }
 }
+
+/// Sensitivity table: the merit spread caused by each tolerance on its own.
+///
+/// Each row is the statistics of a run with only that tolerance applied, so a
+/// row says how much that error alone moves the merit. For a linear merit
+/// with independent errors, the row sigmas add in quadrature to the spread of
+/// the full analysis.
+///
+/// # Errors
+///
+/// The same as [`analyze_seeded`].
+pub fn sensitivity_table<M>(
+    base: &[f64],
+    tolerances: &[Tolerance],
+    merit: &M,
+    passes: usize,
+    pass_limit: f64,
+    seed: u64,
+) -> Result<Vec<(usize, ToleranceStats)>, ToleranceError>
+where
+    M: Fn(&[f64]) -> f64,
+{
+    tolerances
+        .iter()
+        .map(|t| {
+            let stats = analyze_seeded(
+                base,
+                core::slice::from_ref(t),
+                None,
+                merit,
+                passes,
+                pass_limit,
+                seed,
+            )?;
+            Ok((t.index(), stats))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod sensitivity_tests {
+    use super::*;
+
+    #[test]
+    fn rows_add_in_quadrature_for_a_linear_merit() {
+        // Merit x0 + x1 with independent errors of sigma 0.10 and 0.05. Each row
+        // reports its own sigma, and the full spread is their quadrature sum.
+        let base = [0.0, 0.0];
+        let tols = [
+            Tolerance::Normal {
+                index: 0,
+                sigma: 0.10,
+            },
+            Tolerance::Normal {
+                index: 1,
+                sigma: 0.05,
+            },
+        ];
+        let merit = |x: &[f64]| x[0] + x[1];
+        let rows = sensitivity_table(&base, &tols, &merit, 20_000, 1.0, 9).unwrap();
+        assert_eq!(rows[0].0, 0);
+        assert_eq!(rows[1].0, 1);
+        assert!(
+            (rows[0].1.sigma - 0.10).abs() < 0.005,
+            "{}",
+            rows[0].1.sigma
+        );
+        assert!(
+            (rows[1].1.sigma - 0.05).abs() < 0.003,
+            "{}",
+            rows[1].1.sigma
+        );
+        let full = analyze_seeded(&base, &tols, None, &merit, 20_000, 1.0, 9).unwrap();
+        let quadrature = (0.10_f64 * 0.10 + 0.05 * 0.05).sqrt();
+        assert!((full.sigma - quadrature).abs() < 0.005, "{}", full.sigma);
+    }
+
+    #[test]
+    fn invalid_tolerance_is_refused_before_any_row() {
+        let tols = [Tolerance::TruncatedNormal {
+            index: 0,
+            sigma: 0.1,
+            limit: -1.0,
+        }];
+        let result = sensitivity_table(&[0.0], &tols, &|x: &[f64]| x[0], 4, 1.0, 1);
+        assert!(matches!(
+            result,
+            Err(ToleranceError::InvalidTolerance { index: 0 })
+        ));
+    }
+}

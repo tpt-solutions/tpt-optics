@@ -28,6 +28,7 @@ pub mod mtf;
 pub mod operands;
 pub mod optimize;
 pub mod params;
+pub mod seidel;
 pub mod sweep;
 pub mod tolerance;
 pub mod wavefront;
