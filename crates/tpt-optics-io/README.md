@@ -64,7 +64,8 @@ Zemax binary `.zmx`, OSLO files and STEP/IGES geometry are not implemented.
 |---|---|
 | `zmx` | `ZmxDocument`, `ZmxSurface`, `parse`, `write`, `to_sequential`, `from_sequential`, `glass_index` |
 | `seq` | `parse`, `write`, `to_sequential` for CODE V sequence files |
-| `glass` | AGF catalog parsing (`parse_agf`), `reference_catalog`, `AgfError` |
+| `glass` | `parse_agf`, `parse_agf_report` (returns an `AgfCatalog` that also lists the glasses it skipped), `reference_catalog`, `AgfError` |
+| `text` | `decode`, `DecodeError`: byte-level text decoding (UTF-8, falling back to Windows-1252) for catalog and lens files |
 
 ## Errors
 
