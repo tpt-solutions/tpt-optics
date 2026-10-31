@@ -22,6 +22,44 @@ pub struct Material {
     dn_dtemp: f64,
     reference_temp: Kelvin,
     validity_nm: Option<(f64, f64)>,
+    thermo: Option<SchottThermo>,
+}
+
+/// Schott's temperature model of the refractive index (the form in Schott's
+/// TIE-19 technical note), with `ΔT = T − T₀` in kelvin and `λ` in µm:
+///
+/// `Δn_abs(λ, T) = (n² − 1)/(2n) · [D₀ΔT + D₁ΔT² + D₂ΔT³ + (E₀ΔT + E₁ΔT²)/(λ² − λ_TK²)]`
+///
+/// The coefficients are printed on each Schott datasheet. A material with this
+/// model is evaluated at its own index `n`, so the change follows the glass's
+/// dispersion. Without it, [`Material`] uses the linear `dn/dT` term.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SchottThermo {
+    /// `D₀` (1/K).
+    pub d0: f64,
+    /// `D₁` (1/K²).
+    pub d1: f64,
+    /// `D₂` (1/K³).
+    pub d2: f64,
+    /// `E₀` (1/K).
+    pub e0: f64,
+    /// `E₁` (1/K²).
+    pub e1: f64,
+    /// Wavelength constant `λ_TK` (µm).
+    pub lambda_tk_um: f64,
+}
+
+impl SchottThermo {
+    /// Change of the absolute index at wavelength `wl_um` (µm) for a glass of
+    /// index `n` at that wavelength, when the temperature differs by `dt` (K).
+    #[must_use]
+    pub fn delta_n_abs(&self, n: f64, wl_um: f64, dt: f64) -> f64 {
+        let factor = (n * n - 1.0) / (2.0 * n);
+        let polynomial = self.d0 * dt + self.d1 * dt * dt + self.d2 * dt * dt * dt;
+        let resonant = (self.e0 * dt + self.e1 * dt * dt)
+            / (wl_um * wl_um - self.lambda_tk_um * self.lambda_tk_um);
+        factor * (polynomial + resonant)
+    }
 }
 
 impl Material {
@@ -38,7 +76,15 @@ impl Material {
             dn_dtemp,
             reference_temp,
             validity_nm: None,
+            thermo: None,
         }
+    }
+
+    /// Use Schott's temperature model instead of the linear `dn/dT` term.
+    #[must_use]
+    pub fn with_schott_thermo(mut self, thermo: SchottThermo) -> Self {
+        self.thermo = Some(thermo);
+        self
     }
 
     /// Declare the wavelength range (nm) over which the dispersion model was
@@ -115,7 +161,11 @@ impl Material {
 impl IndexAt for Material {
     fn index_at(&self, wavelength: Wavelength, temperature: Kelvin) -> ComplexRefractiveIndex {
         let mut idx = self.dispersion.index(wavelength);
-        idx.n += self.dn_dtemp * (temperature.k() - self.reference_temp.k());
+        let dt = temperature.k() - self.reference_temp.k();
+        match self.thermo {
+            Some(thermo) => idx.n += thermo.delta_n_abs(idx.n, wavelength.um(), dt),
+            None => idx.n += self.dn_dtemp * dt,
+        }
         idx
     }
 }
@@ -173,6 +223,26 @@ impl IndexAt for EdlenAir {
     fn index_at(&self, wavelength: Wavelength, _temperature: Kelvin) -> ComplexRefractiveIndex {
         Dispersion::index(self, wavelength)
     }
+}
+
+/// Refractive index of air at `wl` under the Edlén reference condition
+/// (15 °C, 101 325 Pa). Catalogue indices are quoted for air, so this is the
+/// factor between them and vacuum values.
+#[must_use]
+pub fn air_index(wl: Wavelength) -> f64 {
+    Dispersion::index(&EdlenAir, wl).n
+}
+
+/// Convert a catalogue index quoted for air to vacuum: `n_vac = n_air · n_air(λ)`.
+#[must_use]
+pub fn vacuum_from_air_index(n_air: f64, wl: Wavelength) -> f64 {
+    n_air * air_index(wl)
+}
+
+/// Convert a vacuum index to the value quoted for air: `n_air = n_vac / n_air(λ)`.
+#[must_use]
+pub fn air_from_vacuum_index(n_vac: f64, wl: Wavelength) -> f64 {
+    n_vac / air_index(wl)
 }
 
 /// Table for a built-in material. The data is fixed in the source, so a
@@ -546,5 +616,84 @@ mod glass_code_tests {
         );
         assert!(flat.abbe_number().is_infinite());
         assert_eq!(flat.glass_code(), "500999");
+    }
+}
+
+#[cfg(test)]
+mod air_vacuum_tests {
+    use super::*;
+
+    #[test]
+    fn glass_index_in_vacuum_is_about_4e4_above_its_index_in_air() {
+        // Catalogue indices are for air. At 587.6 nm, n_air ≈ 1.000277, so a
+        // glass with n = 1.5168 in air is about 4.2e-4 higher in vacuum.
+        let wl = Wavelength::from_nm(587.6);
+        let vac = vacuum_from_air_index(1.5168, wl);
+        let diff = vac - 1.5168;
+        assert!(diff > 4.0e-4 && diff < 4.4e-4, "difference {diff}");
+        assert!((air_from_vacuum_index(vac, wl) - 1.5168).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod schott_n_sf5_tests {
+    use super::*;
+    use crate::dispersion::Sellmeier;
+    use crate::units::REFERENCE_TEMPERATURE;
+
+    /// N-SF5 from the Schott datasheet (2007): Sellmeier constants, indices
+    /// at the standard lines, and the dn/dT coefficients. Expected values are
+    /// the datasheet's, so the tests check this crate against that source.
+    fn n_sf5() -> Material {
+        Material::new(
+            "N-SF5",
+            alloc::boxed::Box::new(Sellmeier::new(
+                [1.524_818_89, 0.187_085_527, 1.427_290_15],
+                [0.011_254_756, 0.058_899_539_2, 129.141_675],
+            )),
+            0.0,
+            REFERENCE_TEMPERATURE,
+        )
+        .with_schott_thermo(SchottThermo {
+            d0: -2.51e-7,
+            d1: 1.07e-8,
+            d2: -2.40e-11,
+            e0: 7.85e-7,
+            e1: 1.15e-9,
+            lambda_tk_um: 0.278,
+        })
+    }
+
+    fn n_at(m: &Material, nm: f64, celsius: f64) -> f64 {
+        m.index_at(Wavelength::from_nm(nm), Kelvin::from_celsius(celsius))
+            .n
+    }
+
+    #[test]
+    fn sellmeier_reproduces_the_datasheet_indices() {
+        let m = n_sf5();
+        // Datasheet: n_d 1.67271, n_F 1.68750, n_C 1.66664, n_e 1.67763.
+        assert!((n_at(&m, 587.6, 20.0) - 1.672_71).abs() < 2e-5);
+        assert!((n_at(&m, 486.1, 20.0) - 1.687_50).abs() < 2e-5);
+        assert!((n_at(&m, 656.3, 20.0) - 1.666_64).abs() < 2e-5);
+        assert!((n_at(&m, 546.1, 20.0) - 1.677_63).abs() < 2e-5);
+    }
+
+    #[test]
+    fn thermo_optic_slope_matches_the_datasheet_table() {
+        let m = n_sf5();
+        // Table "Temperature Coefficients of Refractive Index", +20/+40 °C,
+        // absolute dn/dT in units of 1e-6 /K: 0.4 at 1060 nm, 2.0 at the e-line.
+        let slope = |nm: f64, lo: f64, hi: f64| (n_at(&m, nm, hi) - n_at(&m, nm, lo)) / (hi - lo);
+        let s1060 = slope(1060.0, 20.0, 40.0) * 1e6;
+        let se = slope(546.1, 20.0, 40.0) * 1e6;
+        assert!((s1060 - 0.4).abs() < 0.2, "1060 nm slope {s1060} vs 0.4");
+        assert!((se - 2.0).abs() < 0.3, "e-line slope {se} vs 2.0");
+        // And −40/−20 °C at 1060 nm: −0.5e-6 /K.
+        let cold = slope(1060.0, -40.0, -20.0) * 1e6;
+        assert!(
+            (cold + 0.5).abs() < 0.3,
+            "cold 1060 nm slope {cold} vs -0.5"
+        );
     }
 }

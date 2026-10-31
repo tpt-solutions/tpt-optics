@@ -74,7 +74,7 @@ assert!(critical_angle(1.0, 1.5).is_none());
 
 | Module | Contents |
 |---|---|
-| `units` | `Wavelength`, `Frequency`, `OpticalPathLength`, `Angle`, `Kelvin`, physical constants |
+| `units` | `Wavelength`, `Frequency`, `OpticalPathLength`, `Angle`, `Kelvin`, `Length`, `Curvature`, `Power`, physical constants |
 | `dispersion` | `Dispersion` trait and the Sellmeier, Cauchy, Schott, Drude–Lorentz and tabulated models |
 | `index` | `RefractiveIndex` and `ComplexRefractiveIndex` |
 | `material` | `Material`, `MaterialDatabase`, `EdlenAir`, `Vacuum`, `ConstIndex` |
