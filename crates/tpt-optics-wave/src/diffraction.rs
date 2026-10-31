@@ -35,6 +35,19 @@ pub fn angular_spectrum(
 ) -> Vec<Complex<f64>> {
     assert_eq!(field.len(), n * n, "field must be n×n");
     assert!(is_pow2(n), "grid size must be a power of two");
+    assert!(
+        wavelength_m > 0.0 && wavelength_m.is_finite(),
+        "wavelength must be positive and finite"
+    );
+    assert!(
+        dx > 0.0 && dx.is_finite(),
+        "sample spacing must be positive and finite"
+    );
+    assert!(
+        n_idx > 0.0 && n_idx.is_finite(),
+        "refractive index must be positive and finite"
+    );
+    assert!(z.is_finite(), "distance must be finite");
     let k = TAU * n_idx / wavelength_m;
     let df = 1.0 / (n as f64 * dx);
 
@@ -53,8 +66,9 @@ pub fn angular_spectrum(
                 // Propagating component.
                 Complex::cis(k * z * libm::sqrt(arg))
             } else {
-                // Evanescent: block it.
-                Complex::zero()
+                // Evanescent: it decays as exp(−k·z·√(−arg)). That is 1 at
+                // z = 0, and it is small only once z is many decay lengths.
+                Complex::real(libm::exp(-k * z * libm::sqrt(-arg)))
             };
             spectrum[iy * n + ix] *= h;
         }
@@ -422,5 +436,48 @@ mod energy_tests {
         let e_in: f64 = u.iter().map(|c| c.norm_sqr()).sum::<f64>() * dx;
         let e_out: f64 = v.iter().map(|c| c.norm_sqr()).sum::<f64>() * dx_out;
         assert!((e_out / e_in - 1.0).abs() < 1e-9, "ratio {}", e_out / e_in);
+    }
+}
+
+#[cfg(test)]
+mod evanescent_tests {
+    use super::*;
+
+    #[test]
+    fn zero_distance_is_the_identity_even_for_evanescent_frequencies() {
+        // With dx = 0.25 µm and λ = 1 µm the grid holds frequencies above the
+        // 1/λ cutoff, so some components are evanescent. At z = 0 nothing
+        // should change, but blocking the evanescent part removed them.
+        let n = 64;
+        let dx = 0.25e-6;
+        let wl = 1e-6;
+        let mut field = alloc::vec![Complex::real(0.0); n * n];
+        field[(n / 2) * n + n / 2] = Complex::real(1.0);
+        let out = angular_spectrum(&field, n, dx, wl, 0.0, 1.0);
+        let err = out
+            .iter()
+            .zip(&field)
+            .map(|(a, b)| (*a - *b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(err < 1e-9, "max error {err}");
+    }
+}
+
+#[cfg(test)]
+mod input_validation_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "wavelength must be positive")]
+    fn zero_wavelength_is_refused() {
+        let field = alloc::vec![Complex::real(1.0); 16];
+        let _ = angular_spectrum(&field, 4, 1e-6, 0.0, 1e-3, 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "refractive index must be positive")]
+    fn negative_index_is_refused() {
+        let field = alloc::vec![Complex::real(1.0); 16];
+        let _ = angular_spectrum(&field, 4, 1e-6, 1e-6, 1e-3, -1.0);
     }
 }

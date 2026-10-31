@@ -55,7 +55,8 @@ pub fn bpm_2d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm2dConfig) -> Vec
             if arg >= 0.0 {
                 Complex::cis(k * cfg.dz * libm::sqrt(arg))
             } else {
-                Complex::zero()
+                // Evanescent: decays over the step rather than being removed.
+                Complex::real(libm::exp(-k * cfg.dz * libm::sqrt(-arg)))
             }
         })
         .collect();
@@ -149,7 +150,8 @@ pub fn bpm_3d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm3dConfig) -> Vec
                 let h = if arg >= 0.0 {
                     Complex::cis(k * cfg.dz * libm::sqrt(arg))
                 } else {
-                    Complex::zero()
+                    // Evanescent: decays over the step rather than being removed.
+                    Complex::real(libm::exp(-k * cfg.dz * libm::sqrt(-arg)))
                 };
                 work[iy * cfg.nx + ix] *= h;
             }

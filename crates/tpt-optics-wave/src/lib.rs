@@ -34,7 +34,7 @@ pub mod prelude {
     pub use crate::coherence::{gaussian_schell_mu, van_cittert_zernike};
     pub use crate::diffraction::{angular_spectrum, fraunhofer, fresnel_sfft};
     pub use crate::fft::{fft, fft2, ifft, ifft2};
-    pub use crate::fourier::{lens_fourier_transform, mtf_from_psf, psf_from_pupil};
+    pub use crate::fourier::{lens_fourier_transform, mtf_from_psf, psf_from_pupil, strehl_ratio};
     pub use crate::gaussian::{mode_match_thin_lens, rayleigh_range, GaussianBeam};
 }
 

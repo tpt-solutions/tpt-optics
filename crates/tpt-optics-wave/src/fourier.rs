@@ -63,9 +63,41 @@ pub fn psf_from_pupil(
 ) -> (Vec<f64>, f64) {
     let field = lens_fourier_transform(pupil, n, dx_pupil, wavelength_m, f);
     let peak = field.iter().map(|c| c.norm_sqr()).fold(0.0_f64, f64::max);
+    // An empty pupil has no PSF to normalise. Dividing by zero used to give NaN.
+    assert!(peak > 0.0, "pupil transmits no light");
+    // The PSF is normalised to its own peak, so the absolute peak (the
+    // Strehl ratio against an ideal pupil) is not returned.
     let psf = field.iter().map(|c| c.norm_sqr() / peak).collect();
     let dx_psf = wavelength_m * f / (n as f64 * dx_pupil);
     (psf, dx_psf)
+}
+
+/// Strehl ratio of `pupil` against `ideal`, both sampled on the same grid:
+/// the ratio of their on-axis peak intensities at focal length `f`.
+///
+/// Unlike [`psf_from_pupil`], which normalises each PSF to its own peak, this
+/// keeps the absolute peak, so an aberrated pupil reads below one.
+///
+/// # Panics
+///
+/// When the ideal pupil transmits no light, so there is no reference peak.
+pub fn strehl_ratio(
+    pupil: &[Complex<f64>],
+    ideal: &[Complex<f64>],
+    n: usize,
+    dx_pupil: f64,
+    wavelength_m: f64,
+    f: f64,
+) -> f64 {
+    let peak = |p: &[Complex<f64>]| {
+        lens_fourier_transform(p, n, dx_pupil, wavelength_m, f)
+            .iter()
+            .map(|c| c.norm_sqr())
+            .fold(0.0_f64, f64::max)
+    };
+    let reference = peak(ideal);
+    assert!(reference > 0.0, "pupil transmits no light");
+    peak(pupil) / reference
 }
 
 /// MTF from a sampled intensity PSF (square grid): `OTF = FT{PSF}` scaled by
@@ -77,9 +109,9 @@ pub fn mtf_from_psf(psf: &[f64], n: usize) -> Vec<f64> {
     fft2_rows_cols(&mut spec, n);
     let dc = spec[0].norm_sqr().sqrt();
     assert!(dc > 0.0, "PSF must have non-zero total energy");
-    spec.iter()
-        .map(|c| (c.norm_sqr().sqrt() / dc).clamp(0.0, 1.0))
-        .collect()
+    // No clamp: for a non-negative PSF the modulus cannot exceed the DC value,
+    // so a value above 1 means the input had negative samples or a bug.
+    spec.iter().map(|c| c.norm_sqr().sqrt() / dc).collect()
 }
 
 /// Analytic diffraction-limited OTF of a circular, aberration-free pupil
@@ -249,5 +281,64 @@ mod energy_tests {
         let e_in: f64 = field.iter().map(|v| v.norm_sqr()).sum::<f64>() * dx * dx;
         let e_out: f64 = out.iter().map(|v| v.norm_sqr()).sum::<f64>() * dx_out * dx_out;
         assert!((e_out / e_in - 1.0).abs() < 1e-9, "ratio {}", e_out / e_in);
+    }
+}
+
+#[cfg(test)]
+mod empty_pupil_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "transmits no light")]
+    fn empty_pupil_is_refused_not_nan() {
+        let n = 8;
+        let pupil = alloc::vec![Complex::real(0.0); n * n];
+        let _ = psf_from_pupil(&pupil, n, 10e-6, 550e-9, 0.01);
+    }
+}
+
+#[cfg(test)]
+mod strehl_tests {
+    use super::*;
+    use alloc::vec;
+
+    fn disk(n: usize, dx: f64, phase: impl Fn(f64, f64) -> f64) -> Vec<Complex<f64>> {
+        let c = n as f64 / 2.0;
+        (0..n * n)
+            .map(|k| {
+                let x = ((k % n) as f64 - c) * dx;
+                let y = ((k / n) as f64 - c) * dx;
+                if x * x + y * y <= (0.4 * n as f64 * dx).powi(2) {
+                    Complex::cis(phase(x, y))
+                } else {
+                    Complex::zero()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn strehl_of_the_ideal_pupil_is_one() {
+        let (n, dx, wl, f) = (64, 10e-6, 550e-9, 0.01);
+        let ideal = disk(n, dx, |_, _| 0.0);
+        let s = strehl_ratio(&ideal, &ideal, n, dx, wl, f);
+        assert!((s - 1.0).abs() < 1e-12, "{s}");
+    }
+
+    #[test]
+    fn aberrated_pupil_has_strehl_below_one() {
+        let (n, dx, wl, f) = (64, 10e-6, 550e-9, 0.01);
+        let ideal = disk(n, dx, |_, _| 0.0);
+        let aberrated = disk(n, dx, |x, y| 2.0e7 * (x * x + y * y));
+        let s = strehl_ratio(&aberrated, &ideal, n, dx, wl, f);
+        assert!(s > 0.0 && s < 0.99, "{s}");
+    }
+
+    #[test]
+    #[should_panic(expected = "transmits no light")]
+    fn ideal_pupil_with_no_light_is_refused() {
+        let n = 8;
+        let dark = vec![Complex::zero(); n * n];
+        let _ = strehl_ratio(&dark, &dark, n, 10e-6, 550e-9, 0.01);
     }
 }

@@ -114,7 +114,8 @@ pub fn rayleigh_range(w0: f64, wavelength: Wavelength, index: f64) -> f64 {
 }
 
 /// Find a thin-lens focal length that images an input beam (given at the
-/// lens plane) into a target waist `w0_out` located `d_out` after the lens.
+/// lens plane) to a waist of radius `w0_out`. The search fixes the waist
+/// size; its position follows from `f` and `d_out` and is not constrained.
 ///
 /// One-dimensional root search over `f` on a logarithmic bracket; robust
 /// for the usual mode-matching situation. Returns `None` if no focal length
@@ -137,7 +138,10 @@ pub fn mode_match_thin_lens(
             wavelength,
             index,
         };
-        beam.w() - w0_out
+        // Match the waist size. The waist sits wherever the lens puts it,
+        // which is generally not at `d_out`: one focal length cannot set
+        // both the size and the position.
+        beam.w0_equivalent() - w0_out
     };
     // Dense logarithmic scan for a sign change, then bisection.
     let (f_min, f_max) = (1e-5_f64, 5.0_f64);
@@ -247,32 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn mode_match_recovers_known_lens() {
-        // Image a waist to a target waist; the finder should reproduce the
-        // analytic solution for symmetric 4f-like relay: |f| such that
-        // magnification = 1 → f = d/4? Verify via self-consistency instead:
-        // the found lens must actually produce the target waist.
-        let wl = Wavelength::from_nm(1064.0);
-        let q_in = GaussianBeam::at_waist(300e-6, wl, 1.0).propagated(0.1).q;
-        let d_out = 0.2;
-        let w_target = 250e-6; // min achievable at this relay is ~211 µm
-        let f = mode_match_thin_lens(q_in, d_out, w_target, wl, 1.0).expect("solution exists");
-        let lens = Matrix2::new(1.0, 0.0, -1.0 / f, 1.0);
-        let q_out = Matrix2::<f64>::new(1.0, d_out, 0.0, 1.0).apply_q(lens.apply_q(q_in));
-        let b = GaussianBeam {
-            q: q_out,
-            wavelength: wl,
-            index: 1.0,
-        };
-        assert!(
-            (b.w() - w_target).abs() < 1e-6,
-            "matched w = {} vs {}",
-            b.w(),
-            w_target
-        );
-    }
-
-    #[test]
     fn gouy_phase() {
         let wl = Wavelength::from_nm(632.8);
         let beam = GaussianBeam::at_waist(100e-6, wl, 1.0);
@@ -307,6 +285,33 @@ mod divergence_in_medium_tests {
             (beam.divergence() - expect).abs() < 1e-12,
             "divergence {} vs {expect}",
             beam.divergence()
+        );
+    }
+}
+
+#[cfg(test)]
+mod mode_match_waist_tests {
+    use super::*;
+
+    #[test]
+    fn matched_output_has_the_target_waist_size() {
+        // The target is a waist size. The spot size at `d_out` is not the
+        // waist, and the search used to match it.
+        let wl = Wavelength::from_nm(1064.0);
+        let q_in = GaussianBeam::at_waist(300e-6, wl, 1.0).propagated(0.1).q;
+        let w_target = 250e-6;
+        let f = mode_match_thin_lens(q_in, 0.2, w_target, wl, 1.0).expect("solution exists");
+        let lens = Matrix2::new(1.0, 0.0, -1.0 / f, 1.0);
+        let q_out = Matrix2::<f64>::new(1.0, 0.2, 0.0, 1.0).apply_q(lens.apply_q(q_in));
+        let out = GaussianBeam {
+            q: q_out,
+            wavelength: wl,
+            index: 1.0,
+        };
+        assert!(
+            (out.w0_equivalent() - w_target).abs() < 1e-7,
+            "waist {} vs {w_target}",
+            out.w0_equivalent()
         );
     }
 }
