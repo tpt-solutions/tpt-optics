@@ -502,3 +502,48 @@ mod error_path_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod strong_guide_tests {
+    use super::*;
+
+    #[test]
+    fn strong_silicon_slab_fundamental_is_found_and_converges() {
+        // A 1.5 % error at 48 cells across the 2.6 um domain. At 32 cells the
+        // error is about 11 %, from discretisation, not a wrong mode: the field
+        // is guided (n_eff 2.55, between 1.45 and 3.48) at both meshes.
+        // Silicon core (n 3.48) in silica (1.45): a strongly guiding slab.
+        let (h, n_core, n_clad) = (0.22e-6, 3.48, 1.45);
+        let lambda = Wavelength::from_um(1.55);
+        let domain = RectDomain {
+            width: 2.0e-6,
+            height: 3.0 * 0.22e-6 * 4.0,
+            nx: 16,
+            ny: 48,
+        };
+        let idx = |_x: f64, y: f64| {
+            let yc = 0.5 * domain.height;
+            if (y - yc).abs() < 0.5 * h {
+                n_core
+            } else {
+                n_clad
+            }
+        };
+        let (beta, _) = fem_fundamental_mode(&domain, &idx, lambda, 40).unwrap();
+        let slab = crate::slab::SlabLayer {
+            n_core,
+            n_clad,
+            thickness: h,
+        };
+        let modes = crate::slab::slab_modes(&slab, lambda, crate::slab::SlabPolarization::Te);
+        let beta_ref = modes[0].n_eff * lambda.wavenumber();
+        assert!(
+            (beta - beta_ref).abs() < 0.03 * beta_ref,
+            "fem {beta} vs {beta_ref}"
+        );
+        assert!(
+            beta > lambda.wavenumber() * n_clad,
+            "mode is not guided: {beta}"
+        );
+    }
+}

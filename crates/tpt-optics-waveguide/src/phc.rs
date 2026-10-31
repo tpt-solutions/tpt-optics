@@ -96,7 +96,8 @@ pub fn bragg_stack_bands(n1: f64, d1: f64, n2: f64, d2: f64) -> (f64, f64, f64) 
 ///
 /// # Panics
 ///
-/// When `n_k` is zero: the path would have no points.
+/// When `n_k` is zero (the path would have no points), or when `n_g` is even
+/// (the reciprocal-lattice set would not be symmetric about G = 0).
 pub fn pwem_te_bands(
     epsilon: f64,
     r_over_a: f64,
@@ -104,6 +105,10 @@ pub fn pwem_te_bands(
     n_k: usize,
 ) -> Result<Vec<Vec<f64>>, EigenError> {
     assert!(n_k >= 1, "the k-path needs at least one point per segment");
+    assert!(
+        n_g % 2 == 1,
+        "n_g must be odd so the reciprocal-lattice set is symmetric"
+    );
     let n_bands = n_g * n_g;
     // Fourier factors of 1/ε for a square lattice of circular rods.
     // ε(G) = ε_bg δ + (ε_r − ε_bg)·f·2J₁(Gr)/(Gr)
@@ -365,5 +370,17 @@ mod jacobi_convergence_tests {
     #[should_panic(expected = "k-path")]
     fn zero_k_points_is_refused() {
         let _ = pwem_te_bands(1.0, 0.2, 5, 0);
+    }
+}
+
+#[cfg(test)]
+mod odd_grid_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "odd")]
+    fn even_reciprocal_grid_is_refused() {
+        // An even n_g has no G = 0 at its centre, so the set is not symmetric.
+        let _ = pwem_te_bands(11.56, 0.2, 8, 4);
     }
 }

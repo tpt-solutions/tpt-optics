@@ -54,7 +54,7 @@ pub struct SlabLayer {
 pub fn slab_modes(slab: &SlabLayer, wl: Wavelength, pol: SlabPolarization) -> Vec<SlabMode> {
     let k0 = wl.wavenumber();
     let v = 0.5 * slab.thickness * k0 * sqrt(slab.n_core * slab.n_core - slab.n_clad * slab.n_clad);
-    if v <= 0.0 {
+    if !(v > 0.0 && v.is_finite()) {
         return Vec::new();
     }
     // Mode m exists when V > m·π/2.
@@ -321,5 +321,23 @@ mod stack_order_tests {
         assert!(r < 1e-9, "entry-order R = {r}");
         let (r_rev, _) = stack_r_t(&[q(eta2), q(1.5)], wl, 1.0, 1.5);
         assert!(r_rev > 0.1, "reversed-order R = {r_rev}");
+    }
+}
+
+#[cfg(test)]
+mod nan_input_tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_index_gives_no_modes() {
+        // NaN fails `v <= 0.0`, so a NaN V used to pass the check and reach the
+        // mode search.
+        let slab = SlabLayer {
+            n_core: f64::NAN,
+            n_clad: 1.45,
+            thickness: 5e-6,
+        };
+        let wl = Wavelength::from_um(1.55);
+        assert_eq!(slab_modes(&slab, wl, SlabPolarization::Te).len(), 0);
     }
 }
