@@ -62,8 +62,8 @@ generic over it, which is what makes ray tracing differentiable.
   convert), AGF glass catalogs, embedded reference glasses. `unsafe` is
   forbidden workspace-wide and the parsers never panic on malformed input.
 - **`verify`**: proptest strategies, the optical invariants as shared
-  predicates, and `#[cfg(kani)]` harnesses for the two Phase-3 proofs
-  (nearest-positive-root intersection; lossless energy split).
+  predicates, and property tests for nearest-positive-root intersection and
+  lossless energy splits.
 
 ## Design decisions worth knowing
 

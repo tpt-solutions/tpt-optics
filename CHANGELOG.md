@@ -6,6 +6,16 @@ All notable changes to tpt-optics are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed (lighter verification)
+
+- Removed the Kani bounded-model-checking harnesses (`tpt-optics-verify/src/kani.rs`)
+  and the `cfg(kani)` lint. Their three properties (ray–sphere hit on the surface,
+  nearest positive root, lossless split below the critical angle) are now bounded
+  checks in `tests/properties.rs`, run by `cargo test` on a fixed grid that includes
+  the endpoints. Added a small `bounded` module (`check`, `assert_holds`) that
+  enumerates the grid and reports the first failing point, with tests in
+  `tests/bounded.rs`. It is a finite check, not a proof, and needs no separate toolchain.
+
 ### Added
 
 - **`tpt-optics-waveguide`**: Graded-index fiber LP modes (`graded` module).
@@ -208,6 +218,31 @@ All notable changes to tpt-optics are documented here. Format follows
   nominal image plane missed the focus for designs far from focus.
 - `f64::abs`, `signum`, `sqrt`, `powi` and `min` calls in `no_std` code use `libm` or
   forms that Rust 1.81's `core` provides.
+
+### Added (exact gradients, MTF, serde, checks)
+
+- `geometric::differentiable::paraxial_focus_gradients`: exact derivatives of the
+  paraxial EFL and BFL, from a dual-number paraxial trace.
+- `design::gradient`: exact derivatives of EFL, BFL and RMS-spot operands, in
+  addition to ray height. `optimize_exact` and `tolerance_budget` build on them.
+- `design::mtf`: system MTF along the tangential and sagittal axes, from the
+  Zernike-fitted wavefront and the pupil function. The pupil is zero-padded to
+  2n × 2n, and the curve matches the Hopkins function to 0.03 at half cutoff.
+- `AnalysisReport`: per-field MTF (JSON), and `ray_fan_svg` for a ray-fan plot.
+- `tpt_optics_verify::system_check::verify_system`: the trace invariants (on-axis
+  reversibility, and optical-path invariance under rotation) on three rays.
+- `tpt-optics-design` feature `serde`: serialisation for analysis reports, operands,
+  optimiser results, tolerance statistics, and glass-map results.
+- Each crate README is a doctest. `xtask validation` checks the test names cited in
+  `docs/VALIDATION.md`, and CI runs it.
+- Docs: `docs/PREREQUISITES.md`, and links from the root README.
+
+### Changed (this round)
+
+- `FieldReport` has an `mtf` field. JSON output gains an `mtf` object per field.
+- CI gained a validation step and runs the design tests with `parallel,serde`.
+- The Python crate stays outside the workspace, per the recommendation (see
+  `crates/tpt-optics-py/README.md`).
 
 ### Changed (build)
 

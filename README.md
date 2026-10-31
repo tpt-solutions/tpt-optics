@@ -13,7 +13,7 @@ dependencies**.
 - **Core philosophy:** unit-safe, `no_std` + `alloc`-compatible at the core,
   differentiable for inverse optical design, and mathematically rigorous —
   every solver is implemented from scratch and verified with property-based
-  tests and Kani bounded model checking harnesses.
+  tests.
 
 ## Crates
 
@@ -26,7 +26,7 @@ dependencies**.
 | [`tpt-optics-waveguide`](crates/tpt-optics-waveguide) | Slab/step-index fiber mode solving, effective index method, coupled-mode theory, photonic crystals, MZI/ring/AWG devices, scalar FEM | ➖ (`std` feature) |
 | [`tpt-optics-design`](crates/tpt-optics-design) | Merit functions (spot, wavefront, distortion, chromatic), damped least-squares / simulated annealing / genetic optimization, Monte-Carlo tolerancing | ➖ |
 | [`tpt-optics-io`](crates/tpt-optics-io) | Zemax `.zmx` / CODE V `.seq` import-export, Zemax AGF glass catalog import, embedded reference glasses | ❌ (std) |
-| [`tpt-optics-verify`](crates/tpt-optics-verify) | proptest strategies, optical invariants (Snell reversibility, ABCD symplecticity, energy conservation), Kani proof harnesses | ➖ |
+| [`tpt-optics-verify`](crates/tpt-optics-verify) | proptest strategies, optical invariants (Snell reversibility, ABCD symplecticity, energy conservation), intersection properties | ➖ |
 | [`tpt-optics`](crates/tpt-optics) | Umbrella crate with feature-gated re-exports of all of the above | ➖ |
 
 ## Quick start
@@ -59,6 +59,13 @@ just test    # tests only
 
 Repository automation lives in the [`xtask`](xtask) crate; `justfile` recipes
 delegate to it so local dev and CI run exactly the same gate.
+
+More documentation:
+
+- [`docs/PREREQUISITES.md`](docs/PREREQUISITES.md): tools for each task.
+- [`docs/GUIDE.md`](docs/GUIDE.md) and [`docs/COOKBOOK.md`](docs/COOKBOOK.md): first lens and recipes.
+- [`docs/VALIDATION.md`](docs/VALIDATION.md): reference checks and tolerances (checked by `cargo run -p xtask -- validation`).
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md): what the Zemax, CODE V and AGF readers accept.
 
 ## Scope and deviations from `spec.txt`
 
