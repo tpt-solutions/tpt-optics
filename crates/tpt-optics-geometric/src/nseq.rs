@@ -154,7 +154,8 @@ pub struct NsResult {
     pub escaped_power: f64,
     /// Total recorded hits.
     pub recorded_hits: Vec<NsHit>,
-    /// Sum of all ray powers launched (ray_count × unit power).
+    /// Sum of the powers of the rays the source launched. A source that
+    /// returns `None` for a ray launches nothing for it.
     pub launched_power: f64,
 }
 
@@ -220,8 +221,8 @@ impl NsScene {
 
     /// Trace `config.ray_count` rays from `source`.
     ///
-    /// The source is a closure producing one ray (scene frame, unit
-    /// direction) per RNG; each ray carries unit power.
+    /// The source is a closure producing one ray (scene frame) and its power
+    /// per RNG, or `None` for no ray. The ray direction is normalised.
     pub fn trace<F>(&self, config: NsConfig, mut source: F) -> NsResult
     where
         F: FnMut(&mut Rng) -> Option<(Ray<f64>, f64)>,
@@ -231,7 +232,6 @@ impl NsScene {
             absorbed_per_object: alloc::vec![0.0; self.objects.len()],
             ..NsResult::default()
         };
-        result.launched_power = config.ray_count as f64;
 
         for _ in 0..config.ray_count {
             let Some((ray, power)) = source(&mut rng) else {
@@ -240,6 +240,7 @@ impl NsScene {
             let Some(dir) = ray.direction.normalized() else {
                 continue;
             };
+            result.launched_power += power;
             let mut ray = Ray::new(ray.origin, dir);
             let mut accounted = false;
             for bounce in 0..config.max_bounces {
@@ -464,6 +465,39 @@ mod tests {
             1e-6
         ));
         assert!(close(res.void_fraction(), 0.0, 1e-9));
+    }
+
+    #[test]
+    fn launched_power_is_the_power_of_the_rays_launched() {
+        // The budget must use each ray's own power, and skip rays the source
+        // did not launch. Six of the eight rays launch, at 0.5 each.
+        let mut scene = NsScene::new();
+        scene.add(NsObject {
+            geometry: NsGeometry::Plane,
+            position: Vec3::new(0.0, 0.0, 1.0),
+            rotation: Vec3::zero(),
+            reflectivity: 0.0,
+            transmission: 0.0,
+            scatter: ScatterModel::Absorb,
+        });
+        let cfg = NsConfig {
+            ray_count: 8,
+            max_bounces: 2,
+            ..NsConfig::default()
+        };
+        let mut calls = 0usize;
+        let res = scene.trace(cfg, |_| {
+            calls += 1;
+            if calls % 4 == 0 {
+                return None;
+            }
+            Some((Ray::new(Vec3::zero(), Vec3::new(0.0, 0.0, 1.0)), 0.5))
+        });
+        assert!(
+            close(res.launched_power, 3.0, 1e-12),
+            "{}",
+            res.launched_power
+        );
     }
 
     #[test]

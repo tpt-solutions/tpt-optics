@@ -297,8 +297,22 @@ impl TunedParams<f64> {
 }
 
 impl TunedParams<Dual> {
-    /// Parameters with exactly one variable seeded (derivative 1).
-    pub fn seeded(sys: &SequentialSystem, id: ParamId) -> Self {
+    /// Parameters with exactly one variable seeded (derivative 1). Returns
+    /// `None` when `id` names a surface, gap or coefficient the system does
+    /// not have.
+    pub fn seeded(sys: &SequentialSystem, id: ParamId) -> Option<Self> {
+        let in_range = match id {
+            ParamId::Curvature(i) | ParamId::Conic(i) => i < sys.surfaces.len(),
+            ParamId::AsphereCoeff(i, j) => i < sys.surfaces.len() && j < 8,
+            ParamId::Thickness(i) => i < sys.thickness.len(),
+        };
+        if !in_range {
+            return None;
+        }
+        Some(Self::seeded_unchecked(sys, id))
+    }
+
+    fn seeded_unchecked(sys: &SequentialSystem, id: ParamId) -> Self {
         let mut p = TunedParams {
             curvature: sys
                 .surfaces
@@ -362,6 +376,12 @@ pub enum BlockReason {
         /// Index of the surface.
         surface: usize,
     },
+    /// The diffracted order at the surface is evanescent: the phase kick is
+    /// larger than the medium can carry, so no propagating order exists.
+    Evanescent {
+        /// Index of the surface.
+        surface: usize,
+    },
 }
 
 /// Outcome of a sequential trace.
@@ -383,6 +403,49 @@ pub struct TraceResult<T: Scalar> {
     /// false.
     pub total_internal_reflections: usize,
 }
+
+/// Why a [`SequentialSystem`] is not a well-formed prescription.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SystemError {
+    /// The vectors disagree: `thickness` should have one entry per surface,
+    /// and `media` one more than the surfaces (object space first).
+    LengthMismatch {
+        /// Number of surfaces.
+        surfaces: usize,
+        /// Number of gaps.
+        thickness: usize,
+        /// Number of media.
+        media: usize,
+    },
+    /// The gap after surface `surface` is infinite, so the path after it is
+    /// undefined. Only the gap after the last surface may be infinite.
+    InfiniteThickness {
+        /// Index of the surface before the infinite gap.
+        surface: usize,
+    },
+}
+
+impl core::fmt::Display for SystemError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::LengthMismatch {
+                surfaces,
+                thickness,
+                media,
+            } => write!(
+                f,
+                "{surfaces} surfaces need {surfaces} gaps and {} media, but the system has {thickness} gaps and {media} media",
+                surfaces + 1
+            ),
+            Self::InfiniteThickness { surface } => write!(
+                f,
+                "the gap after surface {surface} is infinite; only the last gap may be"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SystemError {}
 
 /// A sequential optical system.
 #[derive(Clone, Debug)]
@@ -413,6 +476,32 @@ impl SequentialSystem {
         self.surfaces.push(surface);
         self.thickness.push(thickness);
         self.media.push(medium_after);
+    }
+
+    /// Check that the system is a well-formed prescription: one gap per
+    /// surface, one medium more than surfaces, and finite gaps everywhere
+    /// except after the last surface (whose gap is unused).
+    ///
+    /// # Errors
+    ///
+    /// [`SystemError::LengthMismatch`] when the vectors disagree, and
+    /// [`SystemError::InfiniteThickness`] for an infinite gap before the last
+    /// surface.
+    pub fn validate(&self) -> Result<(), SystemError> {
+        let n = self.surfaces.len();
+        if self.thickness.len() != n || self.media.len() != n + 1 {
+            return Err(SystemError::LengthMismatch {
+                surfaces: n,
+                thickness: self.thickness.len(),
+                media: self.media.len(),
+            });
+        }
+        for (surface, t) in self.thickness.iter().take(n.saturating_sub(1)).enumerate() {
+            if !t.is_finite() {
+                return Err(SystemError::InfiniteThickness { surface });
+            }
+        }
+        Ok(())
     }
 
     /// Number of surfaces.
@@ -455,6 +544,20 @@ impl SequentialSystem {
         ray: &Ray<T>,
         ctx: TraceContext,
     ) -> TraceResult<T> {
+        // A malformed system has no well-defined path. It traces as blocked
+        // before the first surface, with no points, so callers that index
+        // `points` by surface see a short trace rather than a panic. Use
+        // `validate` to learn why.
+        if self.validate().is_err() {
+            return TraceResult {
+                points: Vec::new(),
+                opd: T::ZERO,
+                exit_direction: ray.direction,
+                blocked: true,
+                block_reason: None,
+                total_internal_reflections: 0,
+            };
+        }
         let n_surfaces = self.surfaces.len();
         let mut points = Vec::with_capacity(n_surfaces);
         let mut opd = T::ZERO;
@@ -532,17 +635,29 @@ impl SequentialSystem {
                     let xg = T::to_f64(hit_point.x);
                     let yg = T::to_f64(hit_point.y);
                     let grad = surf.phase_gradient(xg, yg);
-                    let refracted = snell::refract(d, hit_normal, n_cur, n_next)
-                        .unwrap_or_else(|| snell::reflect(d, hit_normal));
-                    snell::diffract(
+                    let Some(refracted) = snell::refract(d, hit_normal, n_cur, n_next) else {
+                        // Total internal reflection, as for `Refract`: the
+                        // ray stays in its medium and no order is diffracted.
+                        tir_count += 1;
+                        let mirrored = snell::reflect(d, hit_normal);
+                        points.push(point_global);
+                        exit_dir = mirrored;
+                        current = Ray::new(point_global, mirrored);
+                        continue;
+                    };
+                    let Some(order) = snell::diffract(
                         refracted,
                         hit_normal,
                         n_next,
                         n_next,
                         ctx.wavelength.m(),
                         Vec2::new(T::from_f64(grad.x), T::from_f64(grad.y)),
-                    )
-                    .unwrap_or(refracted)
+                    ) else {
+                        blocked = true;
+                        block_reason = Some(BlockReason::Evanescent { surface: i });
+                        break;
+                    };
+                    order
                 }
             };
             n_cur = n_next;
@@ -1070,5 +1185,116 @@ mod field_launch_tests {
         let on = rms_spot_radius(&sys, TraceContext::default(), 0.0, &heights);
         let off = rms_spot_radius(&sys, TraceContext::default(), 10.0, &heights);
         assert!((on - off).abs() < 1e-12, "on-axis {on} vs 10° {off}");
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    fn two_surface_system() -> SequentialSystem {
+        let mut sys = SequentialSystem::new();
+        sys.push(SeqSurface::flat(5e-3), 5e-3, Medium::Const(1.5));
+        sys.push(SeqSurface::flat(5e-3), 0.0, Medium::Const(1.0));
+        sys
+    }
+
+    #[test]
+    fn well_formed_system_validates() {
+        assert_eq!(two_surface_system().validate(), Ok(()));
+    }
+
+    #[test]
+    fn missing_medium_is_reported_not_indexed() {
+        // Dropping a medium used to panic when the trace indexed it.
+        let mut sys = two_surface_system();
+        sys.media.pop();
+        assert!(matches!(
+            sys.validate(),
+            Err(SystemError::LengthMismatch { .. })
+        ));
+        let ray = Ray::new(Vec3::new(1e-3, 0.0, -1.0), Vec3::new(0.0, 0.0, 1.0));
+        let res = sys.trace(&ray, TraceContext::default());
+        assert!(res.blocked);
+        assert_eq!(res.points.len(), 0);
+    }
+
+    #[test]
+    fn infinite_gap_before_the_last_surface_is_invalid() {
+        // Only the final gap is unused. An infinite gap before a surface gives
+        // NaN positions, so it is refused.
+        let mut sys = two_surface_system();
+        sys.thickness[0] = f64::INFINITY;
+        assert_eq!(
+            sys.validate(),
+            Err(SystemError::InfiniteThickness { surface: 0 })
+        );
+    }
+
+    #[test]
+    fn infinite_final_gap_is_allowed() {
+        let mut sys = two_surface_system();
+        sys.thickness[1] = f64::INFINITY;
+        assert_eq!(sys.validate(), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod diffract_tests {
+    use super::*;
+
+    /// Glass (n = 1.5) to air through a flat diffractive surface at z = 0.
+    fn glass_to_air(phase: [f64; 9]) -> SequentialSystem {
+        let mut sys = SequentialSystem::new();
+        sys.media[0] = Medium::Const(1.5);
+        sys.push(
+            SeqSurface::diffractive(Asphere::flat(), phase, 5e-3),
+            0.0,
+            Medium::Const(1.0),
+        );
+        sys
+    }
+
+    #[test]
+    fn total_internal_reflection_at_a_diffractive_surface_is_counted() {
+        // 60° inside glass: sin θ₂ = 1.5·sin 60° > 1, so the ray is trapped.
+        let sys = glass_to_air([0.0; 9]);
+        let (s, c) = (60f64.to_radians().sin(), 60f64.to_radians().cos());
+        let ray = Ray::new(Vec3::new(-0.1 * s / c, 0.0, -0.1), Vec3::new(s, 0.0, c));
+        let res = sys.trace(&ray, TraceContext::default());
+        assert!(!res.blocked, "{:?}", res.block_reason);
+        assert_eq!(res.total_internal_reflections, 1);
+    }
+
+    #[test]
+    fn evanescent_diffracted_order_blocks_the_ray() {
+        // A linear phase of 1e8 rad/m at 587.6 nm kicks the ray by about 9
+        // in units of n, so no propagating order exists. The ray must not be
+        // refracted as if the phase were absent.
+        let mut phase = [0.0; 9];
+        phase[3] = 1e8; // c₁₀: the x-linear term
+        let sys = glass_to_air([0.0; 9]);
+        let sys_phase = {
+            let mut s = SequentialSystem::new();
+            s.push(
+                SeqSurface::diffractive(Asphere::flat(), phase, 5e-3),
+                0.0,
+                Medium::Const(1.0),
+            );
+            s
+        };
+        let ray = Ray::new(Vec3::new(0.0, 0.0, -0.1), Vec3::new(0.0, 0.0, 1.0));
+        let res = sys_phase.trace(&ray, TraceContext::default());
+        assert!(res.blocked);
+        assert_eq!(
+            res.block_reason,
+            Some(BlockReason::Evanescent { surface: 0 })
+        );
+        // The plain glass case with no phase still propagates.
+        let plain = sys.trace(
+            &Ray::new(Vec3::new(0.0, 0.0, -0.1), Vec3::new(0.0, 0.0, 1.0)),
+            TraceContext::default(),
+        );
+        assert!(!plain.blocked);
     }
 }

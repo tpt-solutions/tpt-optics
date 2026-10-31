@@ -37,7 +37,10 @@ where
 {
     let mut grads = Vec::with_capacity(params.len());
     for &id in params {
-        let tuned = TunedParams::<Dual>::seeded(system, id);
+        let Some(tuned) = TunedParams::<Dual>::seeded(system, id) else {
+            grads.push(f64::NAN);
+            continue;
+        };
         // The ray itself enters as constants (derivative 0); only the
         // geometry is seeded.
         let dual_ray = Ray::new(ray.origin.map(Dual::new), ray.direction.map(Dual::new));
@@ -112,7 +115,7 @@ pub fn paraxial_focus_gradients(
     let mut efl = Vec::with_capacity(params.len());
     let mut bfl = Vec::with_capacity(params.len());
     for &id in params {
-        let tuned = TunedParams::<Dual>::seeded(system, id);
+        let tuned = TunedParams::<Dual>::seeded(system, id)?;
         let (y, u) = paraxial_exit(system, ctx, &tuned);
         if libm::fabs(u.v) < 1e-14 {
             return None;
@@ -150,6 +153,20 @@ mod tests {
         );
         sys.push(SeqSurface::flat(12e-3), 0.0, Medium::Vacuum);
         sys
+    }
+
+    #[test]
+    fn parameter_outside_the_system_gives_nan_not_a_panic() {
+        // A ParamId that names no surface or gap has no derivative to give.
+        // NaN marks it, so a caller cannot take it for a zero slope.
+        let sys = singlet();
+        let ray = Ray::new(Vec3::new(2e-3, 0.0, -0.1), Vec3::new(0.0, 0.0, 1.0));
+        let ctx = TraceContext::default();
+        let grads = gradient_of(&sys, &ray, ctx, &[ParamId::Curvature(99)], |res| {
+            res.points.last().map_or(Dual::new(0.0), |p| p.x)
+        });
+        assert!(grads[0].is_nan(), "{grads:?}");
+        assert!(TunedParams::<Dual>::seeded(&sys, ParamId::Thickness(99)).is_none());
     }
 
     #[test]

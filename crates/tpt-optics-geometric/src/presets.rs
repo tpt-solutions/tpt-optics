@@ -278,6 +278,32 @@ pub fn optimised_triplet_100mm(catalog: &MaterialDatabase) -> Result<SequentialS
         .build()
 }
 
+/// Cooke triplet, 50 mm focal length, about f/5 (entrance pupil 10 mm).
+///
+/// The prescription is the final optimised design in the Optiland
+/// documentation, "Tutorial 3d: Optimization Case Study: Cooke Triplet"
+/// (MIT-licensed project), which reports a focal length of 50.002 mm. Its
+/// glasses are SK16 (crown) and F2 (flint), so the catalogue must hold
+/// `sk16` and `f2`. The tutorial's semi-diameters are not given; 6 mm is used
+/// for every surface. The tutorial's stop is the fourth surface, which this
+/// crate does not model as a stop (fields launch at the first surface).
+///
+/// # Errors
+/// Returns the [`BuildError`] of the underlying prescription, for example an
+/// unknown glass.
+pub fn cooke_triplet_50mm(catalog: &MaterialDatabase) -> Result<SequentialSystem, BuildError> {
+    // Radii, element thicknesses and air gaps in millimetres.
+    let sd = 6.0e-3;
+    SystemBuilder::new(catalog)
+        .surface(30.0189e-3, sd, 4.0e-3, "sk16")
+        .surface(-63.0945e-3, sd, 4.21698e-3, "")
+        .surface(-18.2466e-3, sd, 4.0e-3, "f2")
+        .surface(31.338e-3, sd, 2.17393e-3, "")
+        .surface(623.507e-3, sd, 4.0e-3, "sk16")
+        .surface(-16.4225e-3, sd, 43.5928e-3, "")
+        .build()
+}
+
 #[cfg(test)]
 mod achromat_tests {
     use super::*;
