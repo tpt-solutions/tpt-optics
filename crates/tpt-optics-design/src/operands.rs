@@ -18,6 +18,7 @@ use crate::optimize::{damped_least_squares, OptimizeResult};
 
 /// One requirement on a sequential system.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Operand {
     /// Effective focal length (m) should equal `target`.
     Efl {
@@ -360,5 +361,28 @@ mod tests {
         let sys = build(&catalog, &result.x).unwrap();
         let efl = sys.paraxial(ctx()).effective_focal_length().unwrap();
         assert!((efl - target).abs() < 1e-3 * target, "EFL {efl}");
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn operands_serialise_with_their_kind() {
+        let op = Operand::RayHeight {
+            surface: 2,
+            field_deg: 1.5,
+            pupil_height: 5e-3,
+            target: 4e-3,
+            weight: 2.0,
+        };
+        let text = serde_json::to_string(&op).unwrap();
+        assert!(
+            text.contains("RayHeight") && text.contains("\"surface\":2"),
+            "{text}"
+        );
+        let back: Operand = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, op);
     }
 }

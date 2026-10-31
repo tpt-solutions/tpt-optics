@@ -13,6 +13,7 @@ use tpt_optics_geometric::sequential::{SequentialSystem, TraceContext};
 
 /// Result of one invariant.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Check {
     /// Short name of the invariant.
     pub name: &'static str,

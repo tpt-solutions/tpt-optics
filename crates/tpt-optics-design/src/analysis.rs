@@ -16,6 +16,7 @@ use tpt_optics_geometric::sequential::{
 };
 
 use crate::merit::{chromatic_focal_shift, distortion};
+use crate::mtf::{system_mtf, MtfCurves};
 use crate::wavefront::{hexapolar_grid, wavefront_rms, wavefront_samples};
 
 /// Zernike order used for the wavefront fit (OSA index up to 8).
@@ -23,6 +24,7 @@ const WAVEFRONT_MAX_J: u32 = 8;
 
 /// Measurements at one field angle.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FieldReport {
     /// Field angle (degrees).
     pub angle_deg: f64,
@@ -45,11 +47,15 @@ pub struct FieldReport {
     /// OPD of each unblocked ray relative to the on-axis chief ray (m),
     /// one entry per entry of `ray_fan`.
     pub opd: Vec<f64>,
+    /// System MTF along the tangential and sagittal axes, or `None` when no focus
+    /// or no wavefront is available. Frequencies are normalised to the cutoff.
+    pub mtf: Option<MtfCurves>,
 }
 
 /// Summary of a sequential system. Quantities that do not exist for the
 /// system (for example a focal length for an afocal system) are `None`.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnalysisReport {
     /// Effective focal length (m).
     pub efl: Option<f64>,
@@ -129,10 +135,71 @@ impl AnalysisReport {
                 }
                 out.push_str(&json_number(*v));
             }
-            out.push_str("]}");
+            out.push_str("],\"mtf\":");
+            match &f.mtf {
+                Some(m) => {
+                    out.push_str("{\"tangential\":[");
+                    for (k, (nu, v)) in m.tangential.iter().enumerate() {
+                        if k > 0 {
+                            out.push(',');
+                        }
+                        let _ = write!(out, "[{},{}]", json_number(*nu), json_number(*v));
+                    }
+                    out.push_str("],\"sagittal\":[");
+                    for (k, (nu, v)) in m.sagittal.iter().enumerate() {
+                        if k > 0 {
+                            out.push(',');
+                        }
+                        let _ = write!(out, "[{},{}]", json_number(*nu), json_number(*v));
+                    }
+                    out.push_str("]}");
+                }
+                None => out.push_str("null"),
+            }
+            out.push('}');
         }
         out.push_str("]}");
         out
+    }
+
+    /// SVG ray-fan plot for field `index`: image-plane height (horizontal) against
+    /// pupil height (vertical), with a polyline through the unblocked rays.
+    /// Returns `None` for a bad index or an empty fan.
+    #[must_use]
+    pub fn ray_fan_svg(&self, index: usize) -> Option<String> {
+        let field = self.fields.get(index)?;
+        if field.ray_fan.len() < 2 {
+            return None;
+        }
+        let size = 200.0;
+        let pad = 12.0;
+        let span = |values: &mut dyn Iterator<Item = f64>| {
+            let (lo, hi) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                (l.min(v), h.max(v))
+            });
+            if hi - lo > 0.0 {
+                (lo, hi)
+            } else {
+                (lo - 1.0, hi + 1.0)
+            }
+        };
+        let (x_lo, x_hi) = span(&mut field.ray_fan.iter().map(|p| p.1));
+        let (y_lo, y_hi) = span(&mut field.ray_fan.iter().map(|p| p.0));
+        let to_px = |x: f64, y: f64| {
+            let px = pad + (x - x_lo) / (x_hi - x_lo) * (size - 2.0 * pad);
+            let py = size - pad - (y - y_lo) / (y_hi - y_lo) * (size - 2.0 * pad);
+            (px, py)
+        };
+        let mut out = alloc::format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{size}\" height=\"{size}\" viewBox=\"0 0 {size} {size}\">\n"
+        );
+        out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n<polyline fill=\"none\" stroke=\"black\" points=\"");
+        for (h, x) in &field.ray_fan {
+            let (px, py) = to_px(*x, *h);
+            let _ = write!(out, "{px:.2},{py:.2} ");
+        }
+        out.push_str("\"/>\n</svg>\n");
+        Some(out)
     }
 
     /// SVG spot diagram for field `index`, centred on the spot centroid and
@@ -278,6 +345,7 @@ pub fn analyze(
                 spot,
                 ray_fan,
                 opd,
+                mtf: system_mtf(system, ctx, angle_deg, aperture, 64),
             }
         })
         .collect();
@@ -371,6 +439,8 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert_eq!(svg.matches("<circle").count(), heights().len());
         assert!(report.spot_svg(9).is_none());
+        let fan = report.ray_fan_svg(0).expect("fan present");
+        assert!(fan.contains("<polyline"));
     }
 
     #[test]
@@ -380,6 +450,7 @@ mod tests {
         assert!(json.starts_with('{') && json.ends_with('}'));
         assert!(json.contains("\"efl\":"));
         assert!(json.contains("\"ray_fan\":[["));
+        assert!(json.contains("\"mtf\":{\"tangential\":[["), "{json}");
         let csv = report.to_csv();
         assert_eq!(csv.lines().count(), 3);
     }

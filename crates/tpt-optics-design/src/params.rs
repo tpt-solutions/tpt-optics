@@ -42,6 +42,7 @@ impl core::error::Error for ParamError {}
 
 /// Ordered, named parameter values.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParamSet {
     names: Vec<String>,
     values: Vec<f64>,

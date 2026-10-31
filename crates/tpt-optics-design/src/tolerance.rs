@@ -11,6 +11,7 @@ use tpt_optics_core::Rng;
 
 /// One tolerance: parameter index, distribution type, and magnitude.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Tolerance {
     /// Normal error with the given standard deviation.
     Normal {
@@ -40,6 +41,7 @@ impl Tolerance {
 
 /// Statistics of the merit distribution.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ToleranceStats {
     /// Mean merit.
     pub mean: f64,

@@ -27,6 +27,7 @@ impl ParamBound {
 
 /// Why an optimization run stopped.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StopReason {
     /// The last accepted step lowered the cost by less than a relative
     /// `1e-12`, or the cost reached exactly zero.
@@ -41,6 +42,7 @@ pub enum StopReason {
 
 /// What an observer tells the optimiser to do after an iteration.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Control {
     /// Keep going.
     Continue,
@@ -61,6 +63,7 @@ pub struct Progress<'a> {
 
 /// Result of an optimization run.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OptimizeResult {
     /// Best parameter vector found.
     pub x: Vec<f64>,

@@ -17,6 +17,7 @@ use crate::optimize::{genetic_minimize, ParamBound};
 
 /// One crown–flint pair and how well its achromat performs.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlassPair {
     /// Crown glass name.
     pub crown: String,
@@ -97,6 +98,7 @@ pub fn rank_achromats(
 
 /// One achromat found by [`genetic_achromat`].
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GeneticAchromat {
     /// Crown glass name.
     pub crown: String,

@@ -17,11 +17,11 @@
 use alloc::vec::Vec;
 
 use tpt_optics_core::dual::Dual;
-use tpt_optics_geometric::differentiable::gradient_of;
+use tpt_optics_geometric::differentiable::{gradient_of, paraxial_focus_gradients};
 use tpt_optics_geometric::sequential::{field_ray, ParamId, SequentialSystem, TraceContext};
 
 use crate::operands::{residual, residuals, Operand};
-use crate::optimize::{damped_least_squares_with_jacobian, Control, OptimizeResult};
+use crate::optimize::{damped_least_squares_with_jacobian, Control, OptimizeResult, ParamBound};
 
 /// Step for central differences in parameter space (curvature in 1/m,
 /// thickness in m).
@@ -82,6 +82,33 @@ pub fn operand_gradient(
         }
         return alloc::vec![0.0; ids.len()];
     }
+    // Focal lengths come from paraxial rays, which have exact dual-number
+    // derivatives. A system without a focus gives zero, as its penalty is flat.
+    match op {
+        Operand::Efl { weight, .. } => {
+            return paraxial_focus_gradients(sys, ctx, ids).map_or_else(
+                || alloc::vec![0.0; ids.len()],
+                |(efl, _)| efl.into_iter().map(|g| weight * g).collect(),
+            );
+        }
+        Operand::Bfl { weight, .. } => {
+            return paraxial_focus_gradients(sys, ctx, ids).map_or_else(
+                || alloc::vec![0.0; ids.len()],
+                |(_, bfl)| bfl.into_iter().map(|g| weight * g).collect(),
+            );
+        }
+        Operand::RmsSpot {
+            field_deg,
+            heights,
+            weight,
+            ..
+        } => {
+            if let Some(grad) = spot_gradient(sys, ctx, ids, *field_deg, heights) {
+                return grad.into_iter().map(|g| weight * g).collect();
+            }
+        }
+        _ => {}
+    }
     ids.iter()
         .map(|&id| {
             let h = PARAM_STEP;
@@ -90,6 +117,69 @@ pub fn operand_gradient(
             (plus - minus) / (2.0 * h)
         })
         .collect()
+}
+
+/// Exact derivative of the RMS spot radius with respect to each parameter.
+///
+/// Each ray's image coordinates have exact dual-number derivatives. They are
+/// combined through the spot centroid, with `d rms = Σ (x−c)·(dx−dc) / (N·rms)`
+/// summed over both coordinates. Returns `None` if any ray is blocked, so the
+/// caller can fall back to finite differences.
+fn spot_gradient(
+    sys: &SequentialSystem,
+    ctx: TraceContext,
+    ids: &[ParamId],
+    field_deg: f64,
+    heights: &[f64],
+) -> Option<Vec<f64>> {
+    let k = ids.len();
+    let mut xs = Vec::with_capacity(heights.len());
+    let mut ys = Vec::with_capacity(heights.len());
+    let mut gx: Vec<Vec<f64>> = Vec::with_capacity(heights.len());
+    let mut gy: Vec<Vec<f64>> = Vec::with_capacity(heights.len());
+    for &h in heights {
+        let ray = field_ray(h, field_deg);
+        let trace = sys.trace(&ray, ctx);
+        let p = *trace.points.last()?;
+        if trace.blocked {
+            return None;
+        }
+        xs.push(p.x);
+        ys.push(p.y);
+        gx.push(gradient_of(sys, &ray, ctx, ids, |res| {
+            res.points.last().map_or(Dual::new(0.0), |p| p.x)
+        }));
+        gy.push(gradient_of(sys, &ray, ctx, ids, |res| {
+            res.points.last().map_or(Dual::new(0.0), |p| p.y)
+        }));
+    }
+    let n = xs.len() as f64;
+    if n == 0.0 {
+        return None;
+    }
+    let cx = xs.iter().sum::<f64>() / n;
+    let cy = ys.iter().sum::<f64>() / n;
+    let mean_sq = xs
+        .iter()
+        .zip(&ys)
+        .map(|(x, y)| (x - cx) * (x - cx) + (y - cy) * (y - cy))
+        .sum::<f64>()
+        / n;
+    let rms = libm::sqrt(mean_sq);
+    if rms == 0.0 {
+        return Some(alloc::vec![0.0; k]);
+    }
+    let mut out = alloc::vec![0.0; k];
+    for (j, slot) in out.iter_mut().enumerate() {
+        let dcx = gx.iter().map(|g| g[j]).sum::<f64>() / n;
+        let dcy = gy.iter().map(|g| g[j]).sum::<f64>() / n;
+        let mut acc = 0.0;
+        for i in 0..xs.len() {
+            acc += (xs[i] - cx) * (gx[i][j] - dcx) + (ys[i] - cy) * (gy[i][j] - dcy);
+        }
+        *slot = acc / (n * rms);
+    }
+    Some(out)
 }
 
 /// Jacobian of the residuals with respect to the variables `x`, row-major
@@ -172,6 +262,7 @@ where
 pub fn optimize_exact<B>(
     build: &B,
     x0: &[f64],
+    bounds: Option<&[ParamBound]>,
     ops: &[Operand],
     ctx: TraceContext,
     iterations: usize,
@@ -187,9 +278,15 @@ where
         }
     };
     let jacobian = |x: &[f64]| system_jacobian(build, x, ops, ctx);
-    damped_least_squares_with_jacobian(&r, &jacobian, x0, ops.len(), None, iterations, &mut |_| {
-        Control::Continue
-    })
+    damped_least_squares_with_jacobian(
+        &r,
+        &jacobian,
+        x0,
+        ops.len(),
+        bounds,
+        iterations,
+        &mut |_| Control::Continue,
+    )
 }
 
 #[cfg(test)]
@@ -270,7 +367,7 @@ mod tests {
     fn exact_optimiser_matches_the_numerical_one() {
         let ops = operands();
         let x0 = [120e-3, -120e-3];
-        let exact = optimize_exact(&build, &x0, &ops, ctx(), 60);
+        let exact = optimize_exact(&build, &x0, None, &ops, ctx(), 60);
         let numeric = crate::optimize::damped_least_squares(
             &|xv: &[f64], out: &mut Vec<f64>| {
                 out.clear();
@@ -341,5 +438,99 @@ mod budget_tests {
             (linear - mc).abs() < 0.15 * mc,
             "linear {linear} vs Monte Carlo {mc}"
         );
+    }
+}
+
+#[cfg(test)]
+mod focus_gradient_tests {
+    use super::*;
+    use tpt_optics_core::material::MaterialDatabase;
+    use tpt_optics_core::{Kelvin, Wavelength};
+
+    fn ctx() -> TraceContext {
+        TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        }
+    }
+
+    fn build(x: &[f64]) -> Option<SequentialSystem> {
+        let catalog = MaterialDatabase::presets();
+        tpt_optics_geometric::presets::singlet(&catalog, x[0], x[1], 12.5e-3, 5e-3, "bk7", 95e-3)
+            .ok()
+    }
+
+    #[test]
+    fn efl_and_bfl_operand_gradients_are_exact() {
+        let sys = build(&[100e-3, -100e-3]).unwrap();
+        let (ids, _) = parameter_space(&sys);
+        for op in [
+            Operand::Efl {
+                target: 0.1,
+                weight: 1.0,
+            },
+            Operand::Bfl {
+                target: 0.1,
+                weight: 1.0,
+            },
+        ] {
+            let exact = operand_gradient(&op, &sys, ctx(), &ids);
+            for (k, &id) in ids.iter().enumerate() {
+                let h = 1e-8;
+                let fd = (residual(&op, &shifted(&sys, id, h), ctx())
+                    - residual(&op, &shifted(&sys, id, -h), ctx()))
+                    / (2.0 * h);
+                assert!(
+                    (exact[k] - fd).abs() < 1e-4 * fd.abs().max(1e-6),
+                    "{op:?} param {k}: {} vs {fd}",
+                    exact[k]
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod spot_gradient_tests {
+    use super::*;
+    use tpt_optics_core::material::MaterialDatabase;
+    use tpt_optics_core::{Kelvin, Wavelength};
+
+    fn ctx() -> TraceContext {
+        TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        }
+    }
+
+    fn build(x: &[f64]) -> Option<SequentialSystem> {
+        let catalog = MaterialDatabase::presets();
+        tpt_optics_geometric::presets::singlet(&catalog, x[0], x[1], 12.5e-3, 5e-3, "bk7", 95e-3)
+            .ok()
+    }
+
+    #[test]
+    fn spot_gradient_matches_central_differences() {
+        let sys = build(&[100e-3, -100e-3]).unwrap();
+        let (ids, _) = parameter_space(&sys);
+        let heights: Vec<f64> = (0..=6).map(|i| (i as f64 - 3.0) * 2e-3).collect();
+        let op = Operand::RmsSpot {
+            field_deg: 2.0,
+            heights,
+            target: 0.0,
+            weight: 1.0,
+        };
+        let exact = operand_gradient(&op, &sys, ctx(), &ids);
+        for (k, &id) in ids.iter().enumerate() {
+            let h = 1e-7;
+            let fd = (residual(&op, &shifted(&sys, id, h), ctx())
+                - residual(&op, &shifted(&sys, id, -h), ctx()))
+                / (2.0 * h);
+            assert!(
+                (exact[k] - fd).abs() < 1e-4 * fd.abs().max(1e-6),
+                "param {k}: {} vs {fd}",
+                exact[k]
+            );
+        }
     }
 }

@@ -17,12 +17,19 @@ readme = "README.md"
 default = []
 # Parallel Monte-Carlo tolerance analysis on the rayon thread pool.
 parallel = ["dep:rayon"]
+# Serialise results, operands and optimiser types with serde.
+serde = ["dep:serde"]
 
 [dependencies]
 rayon = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 tpt-optics-core = { workspace = true }
 tpt-optics-geometric = { workspace = true }
+tpt-optics-wave = { workspace = true }
 libm = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

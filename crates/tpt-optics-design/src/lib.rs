@@ -24,6 +24,7 @@ pub mod check;
 pub mod glassmap;
 pub mod gradient;
 pub mod merit;
+pub mod mtf;
 pub mod operands;
 pub mod optimize;
 pub mod params;

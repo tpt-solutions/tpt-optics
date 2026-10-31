@@ -756,8 +756,11 @@ version = "0.1.0"
 dependencies = [
  "libm",
  "rayon",
+ "serde",
+ "serde_json",
  "tpt-optics-core",
  "tpt-optics-geometric",
+ "tpt-optics-wave",
 ]
 
 [[package]]
@@ -767,6 +770,8 @@ dependencies = [
  "criterion",
  "libm",
  "proptest",
+ "serde",
+ "serde_json",
  "tpt-optics-core",
 ]
 
