@@ -107,7 +107,16 @@ impl MuellerMatrix {
 
     /// Linear diattenuator with intensity transmissions `t_fast`, `t_slow`.
     #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// When a transmission is not in `[0, 1]`: a passive element cannot
+    /// transmit more than it receives.
     pub fn diattenuator(t_fast: f64, t_slow: f64, theta: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&t_fast) && (0.0..=1.0).contains(&t_slow),
+            "transmission must lie in [0, 1], got {t_fast} and {t_slow}"
+        );
         let a = (t_fast + t_slow) / 2.0;
         let b = (t_fast - t_slow) / 2.0;
         // The (U, V) block is the coherence term, scaled by the geometric
@@ -200,7 +209,16 @@ impl MuellerMatrix {
     /// Partial depolarizer retaining degree of polarization factor `f`
     /// relative to the input DOP: `DOP_out = f · DOP_in` (s0 unchanged).
     #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// When `f` is not in `[0, 1]`. A larger factor would amplify the
+    /// polarization, which no passive element does.
     pub fn partial_depolarizer(f: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&f),
+            "depolarization factor must lie in [0, 1], got {f}"
+        );
         let mut m = [0.0; 16];
         m[0] = 1.0;
         m[5] = f;
@@ -379,5 +397,34 @@ mod jones_bridge_tests {
                 "diattenuator",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod physical_range_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "depolarization factor")]
+    fn depolarizer_factor_above_one_is_refused() {
+        let _ = MuellerMatrix::partial_depolarizer(1.2);
+    }
+
+    #[test]
+    #[should_panic(expected = "transmission")]
+    fn diattenuator_transmission_above_one_is_refused() {
+        let _ = MuellerMatrix::diattenuator(1.5, 0.5, 0.0);
+    }
+
+    #[test]
+    fn dop_is_within_zero_and_one() {
+        // Stokes vector with DOP 1 + rounding: must not exceed 1.
+        let s = crate::stokes::StokesVector {
+            s0: 1.0,
+            s1: 1.0 + 1e-14,
+            s2: 0.0,
+            s3: 0.0,
+        };
+        assert!(s.degree_of_polarization() <= 1.0);
     }
 }

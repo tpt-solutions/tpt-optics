@@ -57,8 +57,9 @@ impl StokesVector {
         if self.s0 <= 0.0 {
             return 0.0;
         }
+        // Rounding can push a fully polarized state a hair above 1.
         (libm::sqrt(self.s1 * self.s1 + self.s2 * self.s2 + self.s3 * self.s3) / self.s0)
-            .clamp(0.0, 1.0 + 1e-12)
+            .clamp(0.0, 1.0)
     }
 
     /// Normalized form `(1, Q/I, U/I, V/I)`.
