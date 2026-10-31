@@ -2,9 +2,10 @@
 
 Verification harnesses for [tpt-optics](../../README.md). The crate collects
 the optical laws the rest of the suite must obey as checkable predicates,
-and reusable proptest strategies for generating physical inputs. The
-critical algorithms (ray–sphere intersection, lossless energy split) are
-checked by property tests over random inputs.
+reusable proptest strategies for generating physical inputs, a bounded grid
+checker, and a system-level check that runs the invariants on a whole
+sequential lens system. The critical algorithms (ray–sphere intersection,
+lossless energy split) are checked by property tests over random inputs.
 
 - **License:** MIT OR Apache-2.0
 - **`no_std`:** the library is `#![no_std]`. It depends on proptest with its
@@ -17,8 +18,7 @@ checked by property tests over random inputs.
 - **Strategies.** proptest generators for bounded floats, unit incident
   directions, rays, refractive indices, index pairs in descending order,
   surface curvatures, conic constants, unit-modulus complex numbers and
-  Sellmeier coefficient sets. The d-line wavelength is provided as a
-  constant.
+  Sellmeier coefficient sets.
 - **Invariants.** Optical laws as predicates that return `Result<(), String>`,
   so a failing case explains itself:
   - Snell's law is reversible, and conserves tangential momentum
@@ -27,10 +27,13 @@ checked by property tests over random inputs.
     equals the index ratio
   - Ray traces through a system are reversible
   - Optical path length is invariant under frame rotation
-- **Bounded checks.** The hit lies ahead of the ray and on the sphere, the
-  solver returns the front surface, and a lossless split below the critical
-  angle conserves energy. These run exhaustively over a fixed grid with the
-  endpoints included (the `bounded` module), not as proofs for every input.
+- **Bounded checks.** `bounded::check` enumerates a finite grid, always
+  including the endpoints, and reports the first counterexample. It is a
+  light stand-in for a model checker. It checks the grid you give it, not
+  every input.
+- **System checks.** `system_check::verify_system` runs the trace invariants
+  (reversibility, OPL frame invariance) over a whole `SequentialSystem` for a
+  set of rays, and returns one `InvariantCheck` per check.
 
 ## Installation
 
@@ -74,9 +77,10 @@ proptest! {
 
 | Module | Contents |
 |---|---|
-| `strategies` | proptest generators: `f64_in`, `incident_direction`, `incident_ray`, `refractive_index`, `index_pair_descending`, `curvature`, `conic_constant`, `unit_complex`, `sellmeier_coeffs`, `d_line` |
-| `bounded` | `check`, `assert_holds`: exhaustive grid checks with endpoints always sampled |
-| `invariants` | `snell_reversible`, `snell_tangential_momentum`, `abcd_symplectic`, `abcd_refraction_det`, `trace_reversibility`, `fresnel_energy_conserved`, `opl_rotation_invariance` |
+| `strategies` | proptest generators: `f64_in`, `incident_direction`, `incident_ray`, `refractive_index`, `index_pair_descending`, `curvature`, `conic_constant`, `unit_complex`, `sellmeier_coeffs` |
+| `invariants` | `snell_reversible`, `snell_tangential_momentum`, `abcd_symplectic`, `abcd_refraction_det`, `trace_reversibility`, `fresnel_energy_conserved`, `opl_rotation_invariance`, and `d_line` (the 587.6 nm reference wavelength) |
+| `bounded` | `check`, `assert_holds`, `Axis`, `Counterexample`: exhaustive grid checks with endpoints always sampled |
+| `system_check` | `verify_system`, `InvariantCheck`: the trace invariants run on a whole sequential system |
 
 ## Running the checks
 
@@ -84,10 +88,12 @@ proptest! {
 cargo test -p tpt-optics-verify
 ```
 
-The bounded checks in `tests/properties.rs` run on fixed grids, and
-`tests/bounded.rs` tests the checker itself. The property tests in
-`tests/properties.rs` exercise every invariant with
-randomized inputs. Proptest regression seeds are checked in alongside them.
+- `tests/properties.rs` exercises every invariant with randomized inputs,
+  including ray–sphere intersection and the lossless energy split. Proptest
+  regression seeds are checked in alongside it.
+- `tests/bounded.rs` runs the grid checker on its own behaviour.
+- `tests/system_cases.rs` runs `verify_system` on sequential systems beyond the
+  singlet, such as a mirror and a glass plate.
 
 ## Choosing tolerances
 
