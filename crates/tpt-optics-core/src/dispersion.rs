@@ -86,6 +86,14 @@ impl Dispersion for Sellmeier {
         for (b, c) in self.b.iter().zip(self.c.iter()) {
             n2 += b * l2 / (l2 - c);
         }
+        if n2 < 0.0 {
+            // Inside an absorption band the lossless model gives n² < 0. The
+            // index is then purely imaginary: n ≈ 0 and k = √(−n²).
+            return ComplexRefractiveIndex {
+                n: 0.0,
+                k: pow(-n2, 0.5),
+            };
+        }
         ComplexRefractiveIndex::real(pow(n2, 0.5))
     }
 }
@@ -626,5 +634,20 @@ mod table_validation_tests {
         let t = Tabulated::from_nm_pairs(&[(400.0, 1.6), (600.0, 1.5), (800.0, 1.45)]).unwrap();
         let n = t.real_index(Wavelength::from_nm(500.0));
         assert!(n > 1.5 && n < 1.6, "{n}");
+    }
+}
+
+#[cfg(test)]
+mod negative_n_squared_tests {
+    use super::*;
+
+    #[test]
+    fn negative_n_squared_is_an_absorbing_index_not_nan() {
+        // Just below the BK7 resonance (λ ≈ √C₃ ≈ 10.2 µm) n² is negative.
+        // The model is lossless, so the continuation is n ≈ 0 with k = √(−n²).
+        let idx = Sellmeier::bk7().index(Wavelength::from_um(10.1));
+        assert!(idx.n.is_finite() && idx.k.is_finite(), "{idx:?}");
+        assert_eq!(idx.n, 0.0);
+        assert!(idx.k > 1.0, "{idx:?}");
     }
 }

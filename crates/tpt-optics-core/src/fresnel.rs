@@ -42,8 +42,11 @@ pub fn fresnel_amplitudes(
     let rp = (i2 * c1 - i1 * c2) / (i2 * c1 + i1 * c2);
     let ts = (Complex::real(2.0) * i1 * c1) / (i1 * c1 + i2 * c2);
     let tp = (Complex::real(2.0) * i1 * c1) / (i2 * c1 + i1 * c2);
-    // θ₂ = arg(e^{iθ₂}) = arg(cosθ₂ + i·sinθ₂) — well-defined in complex.
-    let theta_t = Complex::new(libm::atan2(c2.im + s2.re, c2.re - s2.im), 0.0);
+    // θ₂ = −i·ln(z) with z = cosθ₂ + i·sinθ₂. Its real part is arg z, and its
+    // imaginary part is −ln|z|, which is zero for a propagating wave and
+    // nonzero under total internal reflection or absorption.
+    let z = Complex::new(c2.re - s2.im, c2.im + s2.re);
+    let theta_t = Complex::new(libm::atan2(z.im, z.re), -libm::log(libm::hypot(z.re, z.im)));
     FresnelCoefficients {
         rs,
         rp,
@@ -202,5 +205,29 @@ mod grazing_tests {
             assert!((rs + ts - 1.0).abs() < 1e-12, "s at {k}: {rs} + {ts}");
             assert!((rp + tp - 1.0).abs() < 1e-12, "p at {k}: {rp} + {tp}");
         }
+    }
+}
+
+#[cfg(test)]
+mod theta_t_tests {
+    use super::*;
+
+    #[test]
+    fn lossless_transmitted_angle_is_real() {
+        let n1 = ComplexRefractiveIndex::real(1.0);
+        let n2 = ComplexRefractiveIndex::real(1.5);
+        let c = fresnel_amplitudes(n1, n2, 0.4);
+        assert!(c.theta_t.im.abs() < 1e-12, "{:?}", c.theta_t);
+        assert!((c.theta_t.re - libm::asin(libm::sin(0.4) / 1.5)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn total_internal_reflection_gives_a_complex_angle() {
+        // 1.5 → 1.0 at 60°: sin θ₂ > 1, so the transmitted angle has an
+        // imaginary part. It used to be hard-coded to zero.
+        let n1 = ComplexRefractiveIndex::real(1.5);
+        let n2 = ComplexRefractiveIndex::real(1.0);
+        let c = fresnel_amplitudes(n1, n2, 60f64.to_radians());
+        assert!(c.theta_t.im.abs() > 0.1, "{:?}", c.theta_t);
     }
 }

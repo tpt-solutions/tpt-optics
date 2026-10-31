@@ -68,6 +68,7 @@ impl Material {
     }
 
     /// Abbe number `V_d = (n_d − 1)/(n_F − n_C)` from the dispersion model.
+    /// It is infinite for a material with no dispersion (`n_F = n_C`).
     pub fn abbe_number(&self) -> f64 {
         let t = self.reference_temp;
         let n = |nm: f64| self.index_at(Wavelength::from_nm(nm), t).n;
@@ -77,12 +78,21 @@ impl Material {
     /// Six-digit glass code: `nd` as three digits after the point (`n_d =
     /// 1.517` gives `517`), then `V_d` times ten (`V_d = 64.2` gives `642`).
     /// The value comes from the dispersion model, so the last digit can differ
-    /// from a vendor code.
+    /// from a vendor code. Each part is clamped to three digits: an infinite
+    /// `V_d` (no dispersion) reads as `999`, and a `V_d` that is not a number
+    /// reads as `000`.
     pub fn glass_code(&self) -> String {
         let t = self.reference_temp;
         let nd = self.index_at(Wavelength::from_nm(587.6), t).n;
-        let nd_digits = libm::round((nd - 1.0) * 1000.0) as i64;
-        let vd_digits = libm::round(self.abbe_number() * 10.0) as i64;
+        let nd_digits = libm::round((nd - 1.0) * 1000.0).clamp(0.0, 999.0) as i64;
+        let vd = self.abbe_number();
+        let vd_digits = if vd.is_finite() {
+            libm::round(vd * 10.0).clamp(0.0, 999.0) as i64
+        } else if vd > 0.0 {
+            999
+        } else {
+            0
+        };
         alloc::format!("{nd_digits:03}{vd_digits:03}")
     }
 
@@ -518,5 +528,23 @@ mod metadata_tests {
         let water = db.get("water").unwrap();
         assert_eq!(water.validity_nm(), None);
         assert!(!water.outside_validity(Wavelength::from_nm(50_000.0)));
+    }
+}
+
+#[cfg(test)]
+mod glass_code_tests {
+    use super::*;
+    #[test]
+    fn glass_code_stays_six_digits_without_dispersion() {
+        // n_F = n_C, so V_d is infinite. The code used to saturate and print
+        // a 19-digit number.
+        let flat = Material::new(
+            "flat",
+            alloc::boxed::Box::new(ConstIndex(1.5)),
+            0.0,
+            Kelvin::from_celsius(20.0),
+        );
+        assert!(flat.abbe_number().is_infinite());
+        assert_eq!(flat.glass_code(), "500999");
     }
 }
