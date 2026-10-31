@@ -12,6 +12,7 @@
 extern crate alloc;
 
 pub mod crystals;
+pub mod decomposition;
 pub mod jones;
 pub mod mueller;
 pub mod ray_trace;

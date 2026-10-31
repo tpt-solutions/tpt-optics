@@ -43,7 +43,19 @@ impl PolarizedElement {
     }
 }
 
-/// A sequence of polarizing interfaces.
+/// Two polarizing interfaces traversed in order (a window or a plate).
+///
+/// The element count is fixed at two. A longer chain would need a variable
+/// length container and is not implemented.
+///
+/// Frames: the input is first expressed in `entry_azimuth`. Each element then
+/// applies its local operator, and its `frame_rotation` turns the frame
+/// passively before the next element. The output is in the frame after the
+/// last element.
+///
+/// The traces are one pass in order. `trace_reflection` takes the reflection
+/// at each interface in turn and does not send light back through the earlier
+/// elements, so multiple-pass (Fabry–Pérot) effects are not included.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PolarizedSystem {
     /// Entrance azimuth of the input Jones reference frame relative to the

@@ -19,6 +19,8 @@ active media.
   ellipticity.
 - **Mueller calculus.** 4×4 real matrices that include depolarization. A
   coherency-matrix bridge converts a Jones matrix into a Mueller matrix.
+- **Lu–Chipman decomposition.** Splits a Mueller matrix into a depolarizer, a
+  retarder and a diattenuator, `M = M_Δ · M_R · M_D`.
 - **Polarization ray tracing.** Tracks s and p reference frames through
   Fresnel interfaces, with per-element local operators and window transmission.
 - **Crystal and medium models.** Uniaxial retardance, dichroic polarizers,
@@ -68,9 +70,10 @@ assert!((stokes.degree_of_polarization() - 1.0).abs() < 1e-12);
 |---|---|
 | `jones` | `JonesVector`, `JonesMatrix`, standard elements (polarizer, waveplate, rotator, diattenuator) |
 | `stokes` | `StokesVector` with degree of polarization, azimuth and ellipticity |
-| `mueller` | `MuellerMatrix`, including the Jones-to-Mueller bridge |
+| `mueller` | `MuellerMatrix`, including the Jones-to-Mueller bridge and `apply_to_jones` |
+| `decomposition` | `LuChipman`, `lu_chipman`: depolarizer, retarder and diattenuator of a Mueller matrix |
 | `ray_trace` | `PolarizedElement`, `PolarizedSystem`, Fresnel-window reflection and transmission |
-| `crystals` | `uniaxial_retardance`, `dichroic_polarizer`, `optical_activity` |
+| `crystals` | `uniaxial_retardance`, `retarder_thickness`, `extraordinary_walkoff`, `dichroic_polarizer`, `optical_activity` |
 
 Import the common items with `use tpt_optics_polarization::prelude::*;`.
 

@@ -23,13 +23,17 @@ pub fn retarder_thickness(retardance: f64, delta_n: f64, wl: Wavelength) -> f64 
     retardance * wl.m() / (core::f64::consts::TAU * delta_n)
 }
 
-/// Walk-off angle (rad) of the extraordinary ray in a uniaxial crystal for
-/// propagation at angle `theta` to the optic axis:
-/// `tan ρ = (n_o² − n_e²)·tan θ / (n_e² + n_o²·tan²θ)` … simplified
-/// small-walk-off form `ρ ≈ (1 − n_o²/n_e²)·sinθ·cosθ·(n_o/n_e)` is NOT used;
-/// the exact formula below is implemented.
+/// Walk-off angle (rad) between the Poynting vector and the wavevector of the
+/// extraordinary wave in a uniaxial crystal, for a wavevector at angle `theta`
+/// to the optic axis.
 ///
-/// Returns the signed walk-off (positive toward increasing tilt).
+/// The extraordinary Poynting vector is tilted to `tan θ_e = (n_o/n_e)²·tan θ`.
+/// Subtracting the wavevector angle gives
+/// `tan ρ = (n_o² − n_e²)·tan θ / (n_e² + n_o²·tan²θ)`, which is the exact
+/// form implemented here. It is zero on the axis and at 90°.
+///
+/// Returns the signed walk-off, positive for `n_o > n_e` (calcite-like) at
+/// `0 < θ < 90°`.
 #[must_use]
 pub fn extraordinary_walkoff(theta: f64, n_o: f64, n_e: f64) -> f64 {
     let t = libm::tan(theta);
