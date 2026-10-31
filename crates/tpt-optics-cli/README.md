@@ -10,13 +10,14 @@ cargo run -p tpt-optics-cli -- <command> [arguments]
 |---|---|
 | `info` | Version, crates, and commands. |
 | `glass <NAME> [--nm <WAVELENGTH>]` | Index, Abbe number, glass code, and a warning outside the fitted range. |
-| `analyze <DESIGN.toml> [--json \| --csv \| --svg <FIELD>]` | EFL, BFL, F/#, and per-field spot, distortion, wavefront and focus. |
+| `analyze <DESIGN.toml> [--json \| --csv \| --svg <FIELD> \| --fan-svg <FIELD>]` | EFL, BFL, F/#, and per-field spot, distortion, wavefront and focus. `--svg` draws the spot diagram and `--fan-svg` the ray fan. |
 | `optimize <DESIGN.toml> [--write <OUT.toml>]` | Optimise the variables in `[optimize]`; optionally write the new radii. |
 | `trace <DESIGN.toml> --height-mm <H> [--field-deg <F>]` | Trace one ray and print its intersections and OPD. |
 | `run <DESIGN.toml> --out <DIR>` | Analyse (and optimise, if asked), write `results.json` and `manifest.json`, and cache the result. |
 | `convert <IN> <OUT>` | Convert `.zmx` ↔ `.seq`, chosen by extension. |
+| `init [--preset NAME]` | Write a starter design file to stdout. Only `singlet` is bundled. |
 | `schema` | Print the JSON Schema of the design file. |
-| `mcp` | Serve `glass_index`, `analyze` and `optimize` as JSON-RPC over stdin and stdout. |
+| `mcp` | Serve `glass_index`, `analyze`, `optimize`, `trace` and `schema` as JSON-RPC over stdin and stdout. |
 
 ## Design files
 

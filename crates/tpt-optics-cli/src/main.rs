@@ -59,12 +59,25 @@ fn run(args: &[String]) -> Result<String, String> {
         "run" => run_design(rest),
         "convert" => convert_file(rest),
         "schema" => schema(),
+        "init" => init(rest),
         "mcp" => mcp_loop().map(|()| String::new()),
         other => Err(format!("unknown command '{other}'\n{USAGE}")),
     }
 }
 
 /// JSON Schema of the design file, for editors and validators.
+/// `init --preset NAME`: write a starter design file to stdout. Only the
+/// singlet is bundled; the other presets are named in the error.
+fn init(args: &[String]) -> Result<String, String> {
+    let preset = flag_value(args, "--preset").unwrap_or("singlet");
+    match preset {
+        "singlet" => Ok(include_str!("../examples/singlet.toml").to_string()),
+        other => Err(format!(
+            "preset '{other}' is not bundled yet; available: singlet"
+        )),
+    }
+}
+
 fn schema() -> Result<String, String> {
     let schema = schemars::schema_for!(Design);
     serde_json::to_string_pretty(&schema)
@@ -75,7 +88,8 @@ fn schema() -> Result<String, String> {
 fn info() -> String {
     format!(
         "tpt-optics {}\ncrates: core, geometric, wave, polarization, waveguide, design, io, verify\n\
-         commands: info glass analyze optimize trace run convert mcp\n",
+         bindings: wasm (tpt-optics-wasm), python (tpt-optics-py)\n\
+         commands: info glass analyze optimize trace run convert schema init mcp\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -105,6 +119,34 @@ fn read_design(path: &str) -> Result<(Design, Vec<u8>), String> {
     Ok((design, bytes))
 }
 
+/// The `analyze --json` document: provenance (tool version, a hash of the
+/// input file bytes, the self-check results) around the analysis report.
+fn design_json(
+    design: &Design,
+    input: &[u8],
+    report: &tpt_optics::design::analysis::AnalysisReport,
+) -> Result<String, String> {
+    let system = design.build().map_err(|e| e.to_string())?;
+    let checks: Vec<serde_json::Value> =
+        tpt_optics::design::check::self_check(&system, design.context())
+            .iter()
+            .map(|c| json!({ "name": c.name, "passed": c.passed, "detail": c.detail }))
+            .collect();
+    let analysis: serde_json::Value =
+        serde_json::from_str(&report.to_json()).map_err(|e| e.to_string())?;
+    let doc = json!({
+        "tool": "tpt-optics",
+        "version": env!("CARGO_PKG_VERSION"),
+        "input_hash": format!("{:016x}", manifest::fnv1a(input)),
+        "hash_algorithm": "FNV-1a 64 (identifies inputs; not cryptographic)",
+        "self_check": checks,
+        "analysis": analysis,
+    });
+    serde_json::to_string_pretty(&doc)
+        .map(|s| format!("{s}\n"))
+        .map_err(|e| e.to_string())
+}
+
 fn glass(args: &[String]) -> Result<String, String> {
     let name = positional(args).ok_or("usage: tpt-optics glass <NAME> [--nm <WAVELENGTH>]")?;
     let nm: f64 = flag_value(args, "--nm")
@@ -131,10 +173,10 @@ fn glass(args: &[String]) -> Result<String, String> {
 
 fn analyze(args: &[String]) -> Result<String, String> {
     let path = positional(args).ok_or("usage: tpt-optics analyze <DESIGN.toml>")?;
-    let (design, _) = read_design(path)?;
+    let (design, bytes) = read_design(path)?;
     let report = design.analyze().map_err(|e| e.to_string())?;
     if has_flag(args, "--json") {
-        return Ok(format!("{}\n", report.to_json()));
+        return design_json(&design, &bytes, &report);
     }
     if has_flag(args, "--csv") {
         return Ok(report.to_csv());
@@ -146,6 +188,14 @@ fn analyze(args: &[String]) -> Result<String, String> {
         return report
             .spot_svg(i)
             .ok_or_else(|| format!("no spot for field index {i}"));
+    }
+    if let Some(index) = flag_value(args, "--fan-svg") {
+        let i: usize = index
+            .parse()
+            .map_err(|_| format!("bad field index '{index}'"))?;
+        return report
+            .ray_fan_svg(i)
+            .ok_or_else(|| format!("no ray fan for field index {i}"));
     }
     let mut out = String::new();
     let fmt_opt =

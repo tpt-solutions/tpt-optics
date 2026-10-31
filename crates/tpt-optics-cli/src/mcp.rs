@@ -12,6 +12,7 @@
 use serde_json::{json, Value};
 use tpt_optics::core::index::IndexAt;
 use tpt_optics::core::{Kelvin, Wavelength};
+use tpt_optics::geometric::sequential::field_ray;
 
 use crate::design::{stop_text, Design};
 
@@ -91,6 +92,24 @@ fn tools_list() -> Value {
                     "properties": { "design_toml": { "type": "string" } },
                     "required": ["design_toml"]
                 }
+            },
+            {
+                "name": "trace",
+                "description": "Trace one ray through a TOML design. Returns the intersection points (mm), whether it was blocked, and its OPD (mm).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "design_toml": { "type": "string" },
+                        "height_mm": { "type": "number" },
+                        "field_deg": { "type": "number" }
+                    },
+                    "required": ["design_toml"]
+                }
+            },
+            {
+                "name": "schema",
+                "description": "JSON schema of the TOML design file format.",
+                "inputSchema": { "type": "object", "properties": {} }
             }
         ]
     })
@@ -121,6 +140,29 @@ fn call_tool(params: &Value) -> Value {
                 .to_string()
             })
         }),
+        "trace" => design_tool(&args, |d| {
+            let height_mm = args.get("height_mm").and_then(Value::as_f64).unwrap_or(0.0);
+            let field_deg = args.get("field_deg").and_then(Value::as_f64).unwrap_or(0.0);
+            let system = d
+                .build()
+                .map_err(|e| crate::design::DesignError(e.to_string()))?;
+            let res = system.trace(&field_ray(height_mm * 1e-3, field_deg), d.context());
+            let points: Vec<[f64; 3]> = res
+                .points
+                .iter()
+                .map(|p| [p.x * 1e3, p.y * 1e3, p.z * 1e3])
+                .collect();
+            Ok(json!({
+                "points_mm": points,
+                "blocked": res.blocked,
+                "opd_mm": res.opd * 1e3,
+            })
+            .to_string())
+        }),
+        "schema" => match crate::schema() {
+            Ok(text) => tool_result(text, false),
+            Err(e) => tool_result(e, true),
+        },
         other => tool_result(format!("unknown tool '{other}'"), true),
     }
 }
@@ -229,7 +271,20 @@ thickness_mm = 0.0
     }
 
     #[test]
-    fn tools_list_names_the_three_tools() {
+    fn trace_tool_returns_points_for_the_singlet() {
+        let design = include_str!("../examples/singlet.toml");
+        let (v, is_error) = text_of(&call(
+            "trace",
+            &json!({"design_toml": design, "height_mm": 2.0}),
+        ));
+        assert!(!is_error, "{v}");
+        let points = v["points_mm"].as_array().expect("points");
+        assert!(points.len() >= 2, "{v}");
+        assert_eq!(v["blocked"], json!(false));
+    }
+
+    #[test]
+    fn tools_list_names_every_tool() {
         let r = handle(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#).unwrap();
         let v: Value = serde_json::from_str(&r).unwrap();
         let names: Vec<&str> = v["result"]["tools"]
@@ -238,7 +293,10 @@ thickness_mm = 0.0
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["glass_index", "analyze", "optimize"]);
+        assert_eq!(
+            names,
+            ["glass_index", "analyze", "optimize", "trace", "schema"]
+        );
     }
 
     #[test]
