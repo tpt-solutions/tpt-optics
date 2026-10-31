@@ -28,11 +28,15 @@ tpt.glass_index("N-BK7", 632.8)             # refractive index
 report = json.loads(tpt.singlet_report(100.0, -100.0, 5.0, 12.5, "N-BK7"))
 report["efl"]                                # effective focal length, m
 tpt.rank_achromat_pairs(100.0, ["bk7"], ["f2", "n-sf11"])
+# [(crown, flint, rms_spot_um, axial_colour_um), ...], best first
 ```
 
 Lengths are in millimetres at this boundary. `singlet_report` returns the
-analysis as JSON. An unknown glass raises `KeyError`, and an invalid
-prescription raises `ValueError`.
+analysis as JSON. `rank_achromat_pairs` takes a focal length in millimetres
+and lists of crown and flint glass names, and returns each pair with its RMS
+spot and axial colour in micrometres. Glass names are case-insensitive.
+`glass_index` raises `KeyError` for an unknown glass, and `singlet_report`
+raises `ValueError` for an invalid prescription.
 
 ## Test
 
