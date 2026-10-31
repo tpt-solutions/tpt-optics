@@ -106,7 +106,8 @@ pub fn wavefront_samples(
 #[must_use]
 pub fn fit_zernike(samples: &[PupilSample], max_j: u32) -> Vec<f64> {
     let n = max_j as usize + 1;
-    if samples.is_empty() {
+    // Fewer samples than terms cannot determine the fit.
+    if samples.len() < n {
         return Vec::new();
     }
     // Normal equations AᵀA c = Aᵀw, with A_ij = Z_j(x_i, y_i).
@@ -139,6 +140,11 @@ pub fn wavefront_rms(samples: &[PupilSample], max_j: u32) -> f64 {
         return f64::NAN;
     }
     let coeffs = fit_zernike(samples, max_j);
+    // An empty fit means the basis is degenerate for these samples. Using
+    // the raw RMS then would pass off the unfitted wavefront as a residual.
+    if coeffs.len() != max_j as usize + 1 {
+        return f64::NAN;
+    }
     let mut sum = 0.0;
     for s in samples {
         let rho = libm::sqrt(s.x * s.x + s.y * s.y);
@@ -155,12 +161,16 @@ pub fn wavefront_rms(samples: &[PupilSample], max_j: u32) -> f64 {
 }
 
 /// Gaussian elimination with partial pivoting for a small dense system.
+///
+/// A pivot that is tiny next to the matrix scale means the system is
+/// (numerically) singular, and the solve returns `None`.
 fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
+    let scale = (0..n).map(|i| libm::fabs(a[i][i])).fold(0.0_f64, f64::max);
     for col in 0..n {
         let pivot =
             (col..n).max_by(|&i, &j| libm::fabs(a[i][col]).total_cmp(&libm::fabs(a[j][col])))?;
-        if libm::fabs(a[pivot][col]) < 1e-300 {
+        if libm::fabs(a[pivot][col]) <= 1e-12 * scale {
             return None;
         }
         a.swap(col, pivot);
@@ -276,5 +286,29 @@ mod tests {
         let c = fit_zernike(&samples, 0);
         assert_eq!(c.len(), 1);
         assert!((c[0] - 1.0).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod degenerate_fit_tests {
+    use super::*;
+
+    #[test]
+    fn too_few_samples_for_the_basis_is_nan_not_the_raw_rms() {
+        // Two samples cannot determine the 28 terms up to j = 6. The fit is
+        // rank-deficient, and reporting the raw RMS would look like a residual.
+        let samples = [
+            PupilSample {
+                x: 0.1,
+                y: 0.0,
+                w: 1e-6,
+            },
+            PupilSample {
+                x: 0.0,
+                y: 0.2,
+                w: -1e-6,
+            },
+        ];
+        assert!(wavefront_rms(&samples, 6).is_nan());
     }
 }

@@ -22,10 +22,13 @@ pub fn rms_spot(
     rms_spot_radius(system, ctx, field_angle_deg, &heights)
 }
 
-/// Chromatic focal shift: axial image-plane z that minimizes the spot for
-/// each wavelength, returned as (max − min) shift across the band.
+/// Chromatic focal shift: the spread (max − min) of the paraxial back focal
+/// length over the wavelengths in `contexts`.
 ///
-/// Uses the paraxial back focal length per wavelength as a fast proxy.
+/// This is a first-order figure. It is not the image-plane shift that
+/// minimises the spot, which needs a through-focus search (see
+/// `analysis::analyze`, which searches each field). Returns NaN when fewer
+/// than two wavelengths have a finite focus, since no shift is defined then.
 pub fn chromatic_focal_shift(system: &SequentialSystem, contexts: &[TraceContext]) -> f64 {
     let mut bfls: Vec<f64> = Vec::with_capacity(contexts.len());
     for &ctx in contexts {
@@ -34,7 +37,7 @@ pub fn chromatic_focal_shift(system: &SequentialSystem, contexts: &[TraceContext
         }
     }
     if bfls.len() < 2 {
-        return 0.0;
+        return f64::NAN;
     }
     let max = bfls.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let min = bfls.iter().copied().fold(f64::INFINITY, f64::min);
@@ -172,6 +175,13 @@ mod tests {
             chromatic_focal_shift(&singlet(false), &[ctx(486.1), ctx(587.6), ctx(656.3)]),
             0.0
         );
+    }
+
+    #[test]
+    fn chromatic_shift_with_one_wavelength_is_undefined_not_zero() {
+        // A single wavelength has no spread. It used to return 0.0, which
+        // looks like a real (zero) shift.
+        assert!(chromatic_focal_shift(&singlet(true), &[ctx(587.6)]).is_nan());
     }
 
     #[test]

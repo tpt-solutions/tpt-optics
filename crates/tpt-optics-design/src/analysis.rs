@@ -11,6 +11,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
+use tpt_optics_core::Vec3;
+use tpt_optics_geometric::ray::Ray;
 use tpt_optics_geometric::sequential::{
     field_ray, rms_spot_radius, SequentialSystem, TraceContext,
 };
@@ -41,9 +43,12 @@ pub struct FieldReport {
     pub best_focus_shift: f64,
     /// Image-plane intersection of each unblocked ray (x, y in m).
     pub spot: Vec<(f64, f64)>,
-    /// Ray fan: (pupil height, image-plane height in the meridional plane x) for
-    /// each unblocked ray (m).
+    /// Sagittal ray fan: (pupil height along x, image-plane x) for each
+    /// unblocked ray (m).
     pub ray_fan: Vec<(f64, f64)>,
+    /// Tangential (meridional) ray fan: (pupil height along y, image-plane y)
+    /// for each unblocked ray (m). The field angle acts in this plane.
+    pub ray_fan_tangential: Vec<(f64, f64)>,
     /// OPD of each unblocked ray relative to the on-axis chief ray (m),
     /// one entry per entry of `ray_fan`.
     pub opd: Vec<f64>,
@@ -302,7 +307,9 @@ pub fn analyze(
     let chromatic_shift = if wavelength_contexts.is_empty() {
         None
     } else {
-        Some(chromatic_focal_shift(system, wavelength_contexts))
+        // NaN means fewer than two wavelengths have a focus; report that as
+        // "not computed" rather than as a zero shift.
+        Some(chromatic_focal_shift(system, wavelength_contexts)).filter(|s| s.is_finite())
     };
 
     let aperture = pupil_heights
@@ -310,14 +317,20 @@ pub fn analyze(
         .fold(0.0_f64, |m, h| m.max(libm::fabs(*h)));
     let grid = hexapolar_grid(4);
     let on_axis_focus = best_focus(system, ctx, 0.0, pupil_heights, efl);
-    let chief_opd = system.trace(&field_ray(0.0, 0.0), ctx).opd;
 
     let fields = fields_deg
         .iter()
         .map(|&angle_deg| {
             let mut spot = Vec::new();
             let mut ray_fan = Vec::new();
+            let mut ray_fan_tangential = Vec::new();
             let mut opd = Vec::new();
+            // OPD is relative to this field's own chief ray (pupil height 0).
+            let chief_opd = system.trace(&field_ray(0.0, angle_deg), ctx).opd;
+            let (sin_t, cos_t) = (
+                libm::sin(angle_deg.to_radians()),
+                libm::cos(angle_deg.to_radians()),
+            );
             for &h in pupil_heights {
                 let res = system.trace(&field_ray(h, angle_deg), ctx);
                 if res.blocked {
@@ -327,6 +340,16 @@ pub fn analyze(
                     spot.push((p.x, p.y));
                     ray_fan.push((h, p.x));
                     opd.push(res.opd - chief_opd);
+                }
+                // The tangential ray has its pupil offset along y, in the plane
+                // the field tilts in. Launched like `field_ray`, it crosses the
+                // first vertex plane at (0, h, 0).
+                let origin = Vec3::new(0.0, h - 0.1 * sin_t / cos_t, -0.1);
+                let tangential = system.trace(&Ray::new(origin, Vec3::new(0.0, sin_t, cos_t)), ctx);
+                if !tangential.blocked {
+                    if let Some(p) = tangential.points.last() {
+                        ray_fan_tangential.push((h, p.y));
+                    }
                 }
             }
             let wavefront = if aperture > 0.0 {
@@ -344,6 +367,7 @@ pub fn analyze(
                 best_focus_shift: focus - on_axis_focus,
                 spot,
                 ray_fan,
+                ray_fan_tangential,
                 opd,
                 mtf: system_mtf(system, ctx, angle_deg, aperture, 64),
             }
@@ -453,5 +477,77 @@ mod tests {
         assert!(json.contains("\"mtf\":{\"tangential\":[["), "{json}");
         let csv = report.to_csv();
         assert_eq!(csv.lines().count(), 3);
+    }
+}
+
+#[cfg(test)]
+mod field_opd_tests {
+    use super::*;
+    use tpt_optics_core::material::MaterialDatabase;
+    use tpt_optics_core::{Kelvin, Wavelength};
+    use tpt_optics_geometric::presets::singlet;
+
+    #[test]
+    fn chief_ray_opd_is_zero_at_every_field() {
+        // OPD is measured against each field's own chief ray. The chief ray
+        // at 10° has a different OPD from the on-axis one, so measuring
+        // against the axis gave a nonzero value for the chief ray itself.
+        let catalog = MaterialDatabase::presets();
+        let sys = singlet(&catalog, 100e-3, -100e-3, 12.5e-3, 5e-3, "bk7", 95e-3).unwrap();
+        let ctx = TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        };
+        let heights: Vec<f64> = (0..=10).map(|i| (i as f64 - 5.0) * 1e-3).collect();
+        let report = analyze(&sys, ctx, 0, &heights, &[2.0], &[]);
+        let field = &report.fields[0];
+        assert_eq!(field.opd.len(), heights.len(), "some rays were blocked");
+        assert!(field.opd[5].abs() < 1e-12, "chief OPD {}", field.opd[5]);
+    }
+}
+
+#[cfg(test)]
+mod tangential_fan_tests {
+    use super::*;
+    use tpt_optics_core::material::MaterialDatabase;
+    use tpt_optics_core::{Kelvin, Wavelength};
+    use tpt_optics_geometric::presets::singlet;
+
+    fn report(angle: f64) -> FieldReport {
+        let catalog = MaterialDatabase::presets();
+        let sys = singlet(&catalog, 100e-3, -100e-3, 12.5e-3, 5e-3, "bk7", 95e-3).unwrap();
+        let ctx = TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        };
+        let heights: Vec<f64> = (0..=10).map(|i| (i as f64 - 5.0) * 1e-3).collect();
+        analyze(&sys, ctx, 0, &heights, &[angle], &[])
+            .fields
+            .remove(0)
+    }
+
+    #[test]
+    fn on_axis_tangential_fan_matches_the_sagittal_one() {
+        // A rotationally symmetric lens on axis: the two fans are the same
+        // curve, one in x and one in y.
+        let f = report(0.0);
+        assert_eq!(f.ray_fan_tangential.len(), f.ray_fan.len());
+        for (t, s) in f.ray_fan_tangential.iter().zip(&f.ray_fan) {
+            assert!((t.1 - s.1).abs() < 1e-12, "{t:?} vs {s:?}");
+        }
+    }
+
+    #[test]
+    fn off_axis_tangential_fan_differs_from_the_sagittal_one() {
+        // Off axis the meridional and sagittal aberrations differ, so the
+        // tangential fan is not a copy of the sagittal one.
+        let f = report(2.0);
+        let max_diff = f
+            .ray_fan_tangential
+            .iter()
+            .zip(&f.ray_fan)
+            .map(|(t, s)| (t.1 - s.1).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_diff > 1e-6, "{max_diff}");
     }
 }

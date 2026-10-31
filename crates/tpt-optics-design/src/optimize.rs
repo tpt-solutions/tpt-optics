@@ -215,7 +215,18 @@ where
 {
     let jacobian =
         |x: &[f64]| numeric_jacobian(&|xv: &[f64], out: &mut Vec<f64>| r(xv, out), x, n_res, 1e-7);
-    lm_observed_with(r, &jacobian, x0, n_res, bounds, iterations, observer)
+    // Central differences: two residual evaluations per parameter.
+    let jacobian_evals = 2 * x0.len();
+    lm_observed_with(
+        r,
+        &jacobian,
+        x0,
+        n_res,
+        bounds,
+        iterations,
+        jacobian_evals,
+        observer,
+    )
 }
 
 /// Levenberg–Marquardt with a caller-supplied Jacobian.
@@ -237,9 +248,13 @@ where
     J: Fn(&[f64]) -> Vec<f64>,
     C: FnMut(&Progress<'_>) -> Control,
 {
-    lm_observed_with(r, jacobian, x0, n_res, bounds, iterations, observer)
+    // A supplied Jacobian is taken to cost no residual evaluations.
+    lm_observed_with(r, jacobian, x0, n_res, bounds, iterations, 0, observer)
 }
 
+/// Levenberg–Marquardt core. `jacobian_evals` is the number of residual
+/// evaluations one Jacobian costs, added to `OptimizeResult::evaluations`.
+#[allow(clippy::too_many_arguments)]
 fn lm_observed_with<R, J, C>(
     r: &R,
     jacobian: &J,
@@ -247,6 +262,7 @@ fn lm_observed_with<R, J, C>(
     n_res: usize,
     bounds: Option<&[ParamBound]>,
     iterations: usize,
+    jacobian_evals: usize,
     observer: &mut C,
 ) -> OptimizeResult
 where
@@ -264,6 +280,20 @@ where
     let mut evals = 1usize;
     let mut history = Vec::with_capacity(iterations);
     let mut stop = StopReason::MaxIterations;
+    if !cost.is_finite() {
+        // No step can be judged against a NaN or infinite cost.
+        return OptimizeResult {
+            x,
+            f: cost,
+            evaluations: evals,
+            history,
+            stop: StopReason::Stalled,
+        };
+    }
+    // The Jacobian depends only on the accepted point, so it is computed
+    // once per accepted step and reused across rejected trials.
+    let mut jac = jacobian(&x);
+    evals += jacobian_evals;
     for iteration in 0..iterations {
         if cost == 0.0 {
             stop = StopReason::Converged;
@@ -278,7 +308,6 @@ where
             stop = StopReason::Cancelled;
             break;
         }
-        let jac = jacobian(&x);
         let Some(step) = damped_normal_equations(&jac, &resid, n, lambda) else {
             lambda *= 10.0;
             history.push(cost);
@@ -302,6 +331,8 @@ where
             x = trial;
             resid = trial_resid;
             cost = trial_cost;
+            jac = jacobian(&x);
+            evals += jacobian_evals;
             lambda = (lambda * 0.3).max(1e-10);
             history.push(cost);
             if relative < 1e-12 {
@@ -326,8 +357,11 @@ where
     }
 }
 
+/// Clamp `x` into its box. Panics unless there is one bound per parameter:
+/// a short list used to leave the trailing parameters unbounded.
 fn clamp_all(x: &mut [f64], bounds: Option<&[ParamBound]>) {
     if let Some(bounds) = bounds {
+        assert_eq!(bounds.len(), x.len(), "one bound per parameter is required");
         for (v, b) in x.iter_mut().zip(bounds.iter()) {
             *v = b.clamp(*v);
         }
@@ -685,5 +719,44 @@ mod supplied_jacobian_tests {
         for (a, b) in numeric.x.iter().zip(&exact.x) {
             assert!((a - b).abs() < 1e-8, "{a} vs {b}");
         }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    fn shifted(x: &[f64], out: &mut Vec<f64>) {
+        out.clear();
+        out.extend(x.iter().map(|v| v - 1.0));
+    }
+
+    #[test]
+    fn nan_start_stops_at_once() {
+        // A NaN cost has no descent direction. It used to run to the cap
+        // with every step rejected.
+        let nan = |_x: &[f64], out: &mut Vec<f64>| {
+            out.clear();
+            out.push(f64::NAN);
+        };
+        let res = damped_least_squares(&nan, &[0.0], 1, None, 500);
+        assert!(matches!(res.stop, StopReason::Stalled), "{:?}", res.stop);
+        assert_eq!(res.history.len(), 0);
+    }
+
+    #[test]
+    fn evaluations_count_the_jacobian_traces() {
+        // Each central-difference Jacobian of two parameters costs four
+        // residual evaluations, on top of the start and the trial step.
+        let res = damped_least_squares(&shifted, &[0.0, 0.0], 2, None, 1);
+        assert!(res.evaluations >= 1 + 4 + 2, "{}", res.evaluations);
+    }
+
+    #[test]
+    #[should_panic(expected = "one bound per parameter")]
+    fn short_bounds_are_refused_not_zipped() {
+        // Zipping silently left the second parameter unbounded.
+        let bounds = [ParamBound { lo: -2.0, hi: 2.0 }];
+        let _ = damped_least_squares(&shifted, &[0.0, 0.0], 2, Some(&bounds), 5);
     }
 }

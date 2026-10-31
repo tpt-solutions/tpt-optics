@@ -58,16 +58,21 @@ pub enum Operand {
         weight: f64,
     },
     /// Height (m) of a ray at surface `surface` should equal `target`. The
-    /// ray starts at `pupil_height` on the field `field_deg`.
+    /// ray starts at `pupil_height` on the field `field_deg`. `axis` picks
+    /// the transverse coordinate read from the ray.
     RayHeight {
         /// Index of the surface.
         surface: usize,
         /// Field angle (degrees).
         field_deg: f64,
-        /// Ray height at the first surface (m).
+        /// Ray height at the first surface (m), along the `x` pupil axis.
         pupil_height: f64,
         /// Target height at the surface (m).
         target: f64,
+        /// Coordinate read from the ray: [`RayAxis::X`] (sagittal, the
+        /// default) or [`RayAxis::Y`] (meridional, where the field lies).
+        #[cfg_attr(feature = "serde", serde(default))]
+        axis: RayAxis,
         /// Weight of this residual.
         weight: f64,
     },
@@ -144,11 +149,12 @@ pub fn residual(op: &Operand, system: &SequentialSystem, ctx: TraceContext) -> f
             field_deg,
             pupil_height,
             target,
+            axis,
             weight,
         } => {
             let trace = system.trace(&field_ray(*pupil_height, *field_deg), ctx);
             match trace.points.get(*surface) {
-                Some(p) if !trace.blocked => weight * (p.x - target),
+                Some(p) if !trace.blocked => weight * (axis.pick(p.x, p.y) - target),
                 _ => penalty(*weight, *target),
             }
         }
@@ -158,6 +164,32 @@ pub fn residual(op: &Operand, system: &SequentialSystem, ctx: TraceContext) -> f
             max,
             weight,
         } => range_residual(edge_thickness(system, *index), *min, *max, *weight, penalty),
+    }
+}
+
+/// Transverse coordinate of a ray read by [`Operand::RayHeight`].
+///
+/// Field angles tilt the ray in the y–z plane, so `Y` is the meridional
+/// height (the chief ray has a nonzero `y` off axis) and `X` is the sagittal
+/// one. A pupil offset of zero leaves `X` at zero for every field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RayAxis {
+    /// Sagittal (x) height. This is the default, matching earlier releases.
+    #[default]
+    X,
+    /// Meridional (y) height, where the field angle acts.
+    Y,
+}
+
+impl RayAxis {
+    /// The coordinate of a point along this axis.
+    #[must_use]
+    pub fn pick<T>(self, x: T, y: T) -> T {
+        match self {
+            Self::X => x,
+            Self::Y => y,
+        }
     }
 }
 
@@ -313,9 +345,36 @@ mod tests {
             field_deg: 0.0,
             pupil_height: 2e-3,
             target: 0.0,
+            axis: RayAxis::X,
             weight: 3.0,
         };
         assert!((residual(&op, &sys, ctx()) - 3.0 * x_front).abs() < 1e-12);
+    }
+
+    #[test]
+    fn chief_ray_height_needs_the_meridional_axis() {
+        // The chief ray has no pupil offset, so its sagittal (x) height is
+        // zero for every field. The meridional (y) height moves with the
+        // field angle.
+        let catalog = MaterialDatabase::presets();
+        let sys = build(&catalog, &[100e-3, -100e-3]).unwrap();
+        let trace = sys.trace(&field_ray(0.0, 3.0), ctx());
+        assert!(!trace.blocked, "the test chief ray must reach the image");
+        let y_image = trace.points[1].y;
+        assert!(y_image.abs() > 1e-4, "chief ray should be off axis");
+        let mut op = Operand::RayHeight {
+            surface: 1,
+            field_deg: 3.0,
+            pupil_height: 0.0,
+            target: 0.0,
+            axis: RayAxis::X,
+            weight: 2.0,
+        };
+        assert!(residual(&op, &sys, ctx()).abs() < 1e-15);
+        if let Operand::RayHeight { axis, .. } = &mut op {
+            *axis = RayAxis::Y;
+        }
+        assert!((residual(&op, &sys, ctx()) - 2.0 * y_image).abs() < 1e-12);
     }
 
     #[test]
@@ -375,6 +434,7 @@ mod serde_tests {
             field_deg: 1.5,
             pupil_height: 5e-3,
             target: 4e-3,
+            axis: RayAxis::Y,
             weight: 2.0,
         };
         let text = serde_json::to_string(&op).unwrap();

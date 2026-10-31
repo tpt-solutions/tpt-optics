@@ -27,14 +27,62 @@ pub enum Tolerance {
         /// Half width.
         half_width: f64,
     },
+    /// Normal error with standard deviation `sigma`, limited to `[−limit, +limit]`.
+    /// This is how a vendor's tolerance is usually stated: a sigma inside a
+    /// hard bound. Draws outside the bound are redrawn, and a draw that stays
+    /// outside after a fixed number of tries is clamped.
+    TruncatedNormal {
+        /// Parameter index.
+        index: usize,
+        /// Standard deviation of the untruncated normal.
+        sigma: f64,
+        /// Hard bound on the error (must be positive).
+        limit: f64,
+    },
 }
 
+/// Redraws allowed before a truncated normal is clamped to its bound.
+const TRUNCATION_TRIES: usize = 1_000;
+
 impl Tolerance {
+    /// Parameter index this tolerance perturbs.
+    fn index(&self) -> usize {
+        match *self {
+            Tolerance::Normal { index, .. }
+            | Tolerance::Uniform { index, .. }
+            | Tolerance::TruncatedNormal { index, .. } => index,
+        }
+    }
+
+    /// Whether the tolerance's magnitudes are usable.
+    fn is_valid(&self) -> bool {
+        match *self {
+            Tolerance::TruncatedNormal { sigma, limit, .. } => {
+                sigma.is_finite() && limit.is_finite() && limit > 0.0
+            }
+            _ => true,
+        }
+    }
+
     /// Draw one error sample.
     fn sample(&self, rng: &mut Rng) -> (usize, f64) {
         match *self {
             Tolerance::Normal { index, sigma } => (index, rng.normal(0.0, sigma)),
             Tolerance::Uniform { index, half_width } => (index, rng.range(-half_width, half_width)),
+            Tolerance::TruncatedNormal {
+                index,
+                sigma,
+                limit,
+            } => {
+                let mut e = rng.normal(0.0, sigma);
+                for _ in 0..TRUNCATION_TRIES {
+                    if libm::fabs(e) <= limit {
+                        break;
+                    }
+                    e = rng.normal(0.0, sigma);
+                }
+                (index, e.clamp(-limit, limit))
+            }
         }
     }
 }
@@ -53,6 +101,73 @@ pub struct ToleranceStats {
     pub failure_fraction: f64,
 }
 
+/// Why a tolerance analysis was refused before any run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ToleranceError {
+    /// The analysis needs at least one Monte-Carlo run.
+    NoRuns,
+    /// A tolerance or the compensator names a parameter that the base
+    /// vector does not have.
+    IndexOutOfRange {
+        /// The index that was named.
+        index: usize,
+        /// Length of the base parameter vector.
+        len: usize,
+    },
+    /// A tolerance has a magnitude that cannot be sampled, such as a
+    /// truncation limit that is not positive.
+    InvalidTolerance {
+        /// Parameter index of the tolerance.
+        index: usize,
+    },
+}
+
+impl core::fmt::Display for ToleranceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoRuns => write!(f, "tolerance analysis needs at least one run"),
+            Self::IndexOutOfRange { index, len } => write!(
+                f,
+                "parameter index {index} is out of range for {len} parameters"
+            ),
+            Self::InvalidTolerance { index } => write!(
+                f,
+                "tolerance on parameter {index} has a magnitude that cannot be sampled"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for ToleranceError {}
+
+/// Check the inputs shared by every analysis entry point.
+fn validate(
+    base: &[f64],
+    tolerances: &[Tolerance],
+    compensator: Option<(usize, f64)>,
+    passes: usize,
+) -> Result<(), ToleranceError> {
+    if passes == 0 {
+        return Err(ToleranceError::NoRuns);
+    }
+    if let Some(bad) = tolerances.iter().find(|t| !t.is_valid()) {
+        return Err(ToleranceError::InvalidTolerance { index: bad.index() });
+    }
+    let indices = tolerances
+        .iter()
+        .map(Tolerance::index)
+        .chain(compensator.map(|(ci, _)| ci));
+    for index in indices {
+        if index >= base.len() {
+            return Err(ToleranceError::IndexOutOfRange {
+                index,
+                len: base.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Run the tolerance Monte Carlo.
 ///
 /// * `base` — nominal parameter vector,
@@ -61,8 +176,14 @@ pub struct ToleranceStats {
 ///   after perturbation, that parameter is solved so that the residual
 ///   function hits the target (1-D bisection on the merit),
 /// * `merit` — scalar merit of a parameter vector (smaller is better),
-/// * `passes` — number of Monte-Carlo runs,
+/// * `passes` — number of Monte-Carlo runs (at least one),
 /// * `pass_limit` — merit above which the unit "fails".
+///
+/// # Errors
+///
+/// [`ToleranceError::NoRuns`] when `passes` is zero, and
+/// [`ToleranceError::IndexOutOfRange`] when a tolerance or the compensator
+/// names a parameter outside `base`.
 pub fn analyze<M>(
     base: &[f64],
     tolerances: &[Tolerance],
@@ -71,20 +192,25 @@ pub fn analyze<M>(
     passes: usize,
     pass_limit: f64,
     seed: u64,
-) -> ToleranceStats
+) -> Result<ToleranceStats, ToleranceError>
 where
     M: Fn(&[f64]) -> f64,
 {
+    validate(base, tolerances, compensator, passes)?;
     let mut rng = Rng::new(seed);
     let values: Vec<f64> = (0..passes)
         .map(|_| one_run(base, tolerances, compensator, merit, &mut rng))
         .collect();
-    summarize(values, pass_limit)
+    Ok(summarize(values, pass_limit))
 }
 
 /// Like [`analyze`], but each run draws from its own generator, seeded from
 /// `seed` and the run index. The result does not depend on how the runs are
 /// scheduled, so [`analyze_parallel`] gives exactly the same statistics.
+///
+/// # Errors
+///
+/// The same as [`analyze`].
 pub fn analyze_seeded<M>(
     base: &[f64],
     tolerances: &[Tolerance],
@@ -93,21 +219,26 @@ pub fn analyze_seeded<M>(
     passes: usize,
     pass_limit: f64,
     seed: u64,
-) -> ToleranceStats
+) -> Result<ToleranceStats, ToleranceError>
 where
     M: Fn(&[f64]) -> f64,
 {
+    validate(base, tolerances, compensator, passes)?;
     let values: Vec<f64> = (0..passes)
         .map(|i| {
             let mut rng = Rng::new(run_seed(seed, i as u64));
             one_run(base, tolerances, compensator, merit, &mut rng)
         })
         .collect();
-    summarize(values, pass_limit)
+    Ok(summarize(values, pass_limit))
 }
 
 /// Parallel form of [`analyze_seeded`], on the rayon thread pool. The
 /// statistics are identical to the serial result for the same seed.
+///
+/// # Errors
+///
+/// The same as [`analyze`].
 #[cfg(feature = "parallel")]
 pub fn analyze_parallel<M>(
     base: &[f64],
@@ -117,11 +248,12 @@ pub fn analyze_parallel<M>(
     passes: usize,
     pass_limit: f64,
     seed: u64,
-) -> ToleranceStats
+) -> Result<ToleranceStats, ToleranceError>
 where
     M: Fn(&[f64]) -> f64 + Sync,
 {
     use rayon::prelude::*;
+    validate(base, tolerances, compensator, passes)?;
     let values: Vec<f64> = (0..passes)
         .into_par_iter()
         .map(|i| {
@@ -129,7 +261,7 @@ where
             one_run(base, tolerances, compensator, merit, &mut rng)
         })
         .collect();
-    summarize(values, pass_limit)
+    Ok(summarize(values, pass_limit))
 }
 
 /// Seed of run `index` derived from the base `seed` (SplitMix64 mixing).
@@ -143,7 +275,7 @@ fn run_seed(seed: u64, index: u64) -> u64 {
 }
 
 /// One tolerance run: perturb the parameters, apply the compensator, and
-/// return the merit.
+/// return the merit. The caller has validated every index.
 fn one_run<M>(
     base: &[f64],
     tolerances: &[Tolerance],
@@ -165,7 +297,7 @@ where
     merit(&x)
 }
 
-/// Statistics of a list of merit values.
+/// Statistics of a non-empty list of merit values.
 fn summarize(mut values: Vec<f64>, pass_limit: f64) -> ToleranceStats {
     values.sort_by(f64::total_cmp);
     let n = values.len() as f64;
@@ -229,7 +361,7 @@ mod tests {
             index: 0,
             sigma: 0.1,
         }];
-        let stats = analyze(&base, &tols, None, &|x| x[0], 20_000, 1.5, 99);
+        let stats = analyze(&base, &tols, None, &|x| x[0], 20_000, 1.5, 99).unwrap();
         assert!(
             close(stats.mean, 1.0, 0.01),
             "mean {mean}",
@@ -260,7 +392,8 @@ mod tests {
             5_000,
             31.0,
             7,
-        );
+        )
+        .unwrap();
         assert!(close(stats.mean, 30.0, 1e-6), "mean {}", stats.mean);
         assert!(stats.sigma < 1e-6, "sigma {}", stats.sigma);
         assert!(close(stats.failure_fraction, 0.0, 1e-9));
@@ -273,7 +406,7 @@ mod tests {
             index: 0,
             half_width: 0.1,
         }];
-        let stats = analyze(&base, &tols, None, &|x| x[0], 20_000, 0.05, 3);
+        let stats = analyze(&base, &tols, None, &|x| x[0], 20_000, 0.05, 3).unwrap();
         // Uniform(±0.1): P(x > 0.05) = 0.25.
         assert!(
             close(stats.failure_fraction, 0.25, 0.02),
@@ -281,6 +414,34 @@ mod tests {
             stats.failure_fraction
         );
         assert!(stats.mean.abs() < 0.005);
+    }
+
+    #[test]
+    fn zero_runs_is_an_error_not_a_panic() {
+        let result = analyze(&[0.0], &[], None, &|x: &[f64]| x[0], 0, 1.0, 1);
+        assert_eq!(result, Err(ToleranceError::NoRuns));
+    }
+
+    #[test]
+    fn out_of_range_tolerance_is_an_error_not_a_panic() {
+        let tols = [Tolerance::Normal {
+            index: 3,
+            sigma: 0.1,
+        }];
+        let result = analyze(&[0.0, 1.0], &tols, None, &|x: &[f64]| x[0], 4, 1.0, 1);
+        assert_eq!(
+            result,
+            Err(ToleranceError::IndexOutOfRange { index: 3, len: 2 })
+        );
+    }
+
+    #[test]
+    fn out_of_range_compensator_is_an_error_not_a_panic() {
+        let result = analyze(&[0.0], &[], Some((1, 0.0)), &|x: &[f64]| x[0], 4, 1.0, 1);
+        assert_eq!(
+            result,
+            Err(ToleranceError::IndexOutOfRange { index: 1, len: 1 })
+        );
     }
 }
 
@@ -291,7 +452,7 @@ mod nan_tolerance_tests {
     #[test]
     fn nan_merit_counts_as_failure() {
         // A merit that is undefined everywhere must fail every sample, not pass.
-        let stats = analyze(&[0.0], &[], None, &|_x: &[f64]| f64::NAN, 8, 1.0, 1);
+        let stats = analyze(&[0.0], &[], None, &|_x: &[f64]| f64::NAN, 8, 1.0, 1).unwrap();
         assert_eq!(stats.failure_fraction, 1.0);
     }
 }
@@ -319,18 +480,57 @@ mod seeded_tests {
 
     #[test]
     fn seeded_analysis_is_reproducible() {
-        let a = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 7);
-        let b = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 7);
+        let a = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 7).unwrap();
+        let b = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 7).unwrap();
         assert_eq!(a, b);
-        let c = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 8);
+        let c = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 200, 0.5, 8).unwrap();
         assert_ne!(a.mean, c.mean);
+    }
+
+    #[test]
+    fn seeded_analysis_refuses_zero_runs() {
+        let result = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 0, 0.5, 7);
+        assert_eq!(result, Err(ToleranceError::NoRuns));
     }
 
     #[cfg(feature = "parallel")]
     #[test]
     fn parallel_analysis_matches_the_serial_result_exactly() {
-        let serial = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 500, 0.5, 11);
-        let parallel = analyze_parallel(&[1.0, 2.0], &tols(), None, &merit, 500, 0.5, 11);
+        let serial = analyze_seeded(&[1.0, 2.0], &tols(), None, &merit, 500, 0.5, 11).unwrap();
+        let parallel = analyze_parallel(&[1.0, 2.0], &tols(), None, &merit, 500, 0.5, 11).unwrap();
         assert_eq!(serial, parallel);
+    }
+}
+
+#[cfg(test)]
+mod truncated_tests {
+    use super::*;
+
+    #[test]
+    fn truncated_normal_stays_within_its_limit() {
+        // Merit |x| with sigma 0.1 would exceed 0.2 now and then. Truncated at
+        // 0.15, it never does.
+        let tols = [Tolerance::TruncatedNormal {
+            index: 0,
+            sigma: 0.1,
+            limit: 0.15,
+        }];
+        let stats =
+            analyze_seeded(&[0.0], &tols, None, &|x: &[f64]| x[0].abs(), 5000, 0.2, 3).unwrap();
+        assert_eq!(stats.failure_fraction, 0.0);
+        assert!(stats.p90 <= 0.15 + 1e-12, "{}", stats.p90);
+    }
+
+    #[test]
+    fn non_positive_truncation_limit_is_refused() {
+        // A zero limit cannot be sampled, so it is refused up front rather
+        // than looping.
+        let tols = [Tolerance::TruncatedNormal {
+            index: 0,
+            sigma: 0.1,
+            limit: 0.0,
+        }];
+        let result = analyze(&[0.0], &tols, None, &|x: &[f64]| x[0], 4, 1.0, 1);
+        assert_eq!(result, Err(ToleranceError::InvalidTolerance { index: 0 }));
     }
 }

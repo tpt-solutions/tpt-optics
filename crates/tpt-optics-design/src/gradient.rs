@@ -68,6 +68,7 @@ pub fn operand_gradient(
         surface,
         field_deg,
         pupil_height,
+        axis,
         weight,
         ..
     } = op
@@ -76,7 +77,9 @@ pub fn operand_gradient(
         let trace = sys.trace(&ray, ctx);
         if !trace.blocked && trace.points.get(*surface).is_some() {
             let grads = gradient_of(sys, &ray, ctx, ids, |res| {
-                res.points.get(*surface).map_or(Dual::new(0.0), |p| p.x)
+                res.points
+                    .get(*surface)
+                    .map_or(Dual::new(0.0), |p| axis.pick(p.x, p.y))
             });
             return grads.into_iter().map(|g| weight * g).collect();
         }
@@ -292,6 +295,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operands::RayAxis;
     use crate::optimize::numeric_jacobian;
     use tpt_optics_core::material::MaterialDatabase;
     use tpt_optics_core::{Kelvin, Wavelength};
@@ -320,6 +324,7 @@ mod tests {
                 field_deg: 0.0,
                 pupil_height: 5e-3,
                 target: 4.8e-3,
+                axis: RayAxis::X,
                 weight: 1.0,
             },
         ]
