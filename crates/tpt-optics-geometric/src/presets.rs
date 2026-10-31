@@ -249,6 +249,35 @@ pub fn achromatic_doublet(
     build(x)
 }
 
+/// Three-element crown–flint–crown lens, 100 mm focal length, about f/5.
+///
+/// This is an optimised design, not the classical Cooke prescription. Its radii
+/// and gaps were found with the operand optimiser (EFL 100 mm, focus on the
+/// image plane, on-axis and 5° spots), with the gaps bounded to physical
+/// values. It needs the glasses `bk7` (crown) and `n-sf11` (flint) in the
+/// catalogue. Traced with the built-in values, it has a focal length of about
+/// 100.0 mm and an on-axis RMS spot of about 10 µm at a 10 mm semi-diameter.
+/// Check the performance with your own catalogue before relying on it.
+///
+/// # Errors
+/// Returns the [`BuildError`] of the underlying prescription, for example an
+/// unknown glass.
+pub fn optimised_triplet_100mm(catalog: &MaterialDatabase) -> Result<SequentialSystem, BuildError> {
+    // Radii and gaps in millimetres, from the optimiser.
+    let sd = 10.0e-3;
+    let r = [42.22, -260.0, -55.85, 153.51, 43.12, -290.11];
+    let t = [6.13, 4.47, 1.0, 19.05, 8.8];
+    SystemBuilder::new(catalog)
+        .surface(r[0] * 1e-3, sd, t[0] * 1e-3, "bk7")
+        .surface(r[1] * 1e-3, sd, t[1] * 1e-3, "")
+        .surface(r[2] * 1e-3, sd, t[2] * 1e-3, "n-sf11")
+        .surface(r[3] * 1e-3, sd, t[3] * 1e-3, "")
+        .surface(r[4] * 1e-3, sd, t[4] * 1e-3, "bk7")
+        .surface(r[5] * 1e-3, sd, 89.22e-3, "")
+        .surface(0.0, sd, 0.0, "")
+        .build()
+}
+
 #[cfg(test)]
 mod achromat_tests {
     use super::*;
@@ -321,5 +350,45 @@ mod achromat_tests {
             matches!(err, BuildError::UnknownGlass { ref name, .. } if name == "f9"),
             "{err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod triplet_tests {
+    use super::*;
+    use crate::sequential::rms_spot_radius;
+    use crate::sequential::TraceContext;
+    use tpt_optics_core::dispersion::Sellmeier;
+    use tpt_optics_core::material::Material;
+    use tpt_optics_core::units::REFERENCE_TEMPERATURE;
+    use tpt_optics_core::{Kelvin, Wavelength};
+
+    fn catalog() -> MaterialDatabase {
+        let mut db = MaterialDatabase::presets();
+        db.insert(Material::new(
+            "n-sf11",
+            alloc::boxed::Box::new(Sellmeier::new(
+                [1.737_596_95, 0.313_747_346, 1.898_781_01],
+                [0.013_188_707, 0.062_306_814_2, 155.236_29],
+            )),
+            7.0e-6,
+            REFERENCE_TEMPERATURE,
+        ));
+        db
+    }
+
+    #[test]
+    fn optimised_triplet_has_its_focal_length_and_a_small_axial_spot() {
+        let cat = catalog();
+        let sys = optimised_triplet_100mm(&cat).unwrap();
+        let ctx = TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        };
+        let efl = sys.paraxial(ctx).effective_focal_length().unwrap();
+        assert!((efl - 0.100).abs() < 0.5e-3, "EFL {efl}");
+        let heights: alloc::vec::Vec<f64> = (0..=8).map(|i| (i as f64 - 4.0) * 2e-3).collect();
+        let spot = rms_spot_radius(&sys, ctx, 0.0, &heights);
+        assert!(spot < 20e-6, "on-axis spot {spot}");
     }
 }

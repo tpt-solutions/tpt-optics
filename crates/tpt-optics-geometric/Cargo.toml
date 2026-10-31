@@ -15,14 +15,18 @@ readme = "README.md"
 
 [features]
 default = []
+# Serialise system descriptions (materials by name) with serde.
+serde = ["dep:serde"]
 # Reserved: std-only extras keep the crate no_std + alloc by default.
 std = []
 
 [dependencies]
 tpt-optics-core = { workspace = true }
 libm = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 criterion = { workspace = true }
 proptest = { workspace = true }
 

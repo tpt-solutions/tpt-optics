@@ -15,7 +15,9 @@ use alloc::vec::Vec;
 use tpt_optics_core::Dual;
 
 use crate::ray::Ray;
-use crate::sequential::{ParamId, SequentialSystem, TraceContext, TraceResult, TunedParams};
+use crate::sequential::{
+    ParamId, SequentialSystem, SurfaceAction, TraceContext, TraceResult, TunedParams,
+};
 
 /// Exact gradient of a scalar traced quantity with respect to the listed
 /// parameters, via one dual-number trace per parameter.
@@ -66,6 +68,61 @@ pub fn gradient_opd(
     params: &[ParamId],
 ) -> Vec<f64> {
     gradient_of(system, ray, ctx, params, |r| r.opd)
+}
+
+/// Paraxial ray `(y, u)` at the last surface for a ray that starts at height
+/// 1 with zero slope, computed with dual numbers. The curvatures and gaps come
+/// from `tuned`, and the indices from the system's media.
+fn paraxial_exit(
+    system: &SequentialSystem,
+    ctx: TraceContext,
+    tuned: &TunedParams<Dual>,
+) -> (Dual, Dual) {
+    let n = system.surfaces.len();
+    let mut y = Dual::new(1.0);
+    let mut u = Dual::new(0.0);
+    for i in 0..n {
+        let c = tuned.curvature[i];
+        if system.surfaces[i].action == SurfaceAction::Reflect {
+            u -= c * y * Dual::new(2.0);
+        } else {
+            let n_before = system.index_before(i, ctx);
+            let n_after = system.index_after(i, ctx);
+            let phi = c * Dual::new(n_after - n_before);
+            u = (u * Dual::new(n_before) - y * phi) * Dual::new(1.0 / n_after);
+        }
+        if i + 1 < n {
+            y += u * tuned.thickness[i];
+        }
+    }
+    (y, u)
+}
+
+/// Exact derivatives of the paraxial effective focal length and back focal
+/// length with respect to the parameters `params`.
+///
+/// Returns `(d EFL/dp, d BFL/dp)`, one entry per parameter, or `None` for a
+/// system without a finite focus. The derivatives come from one dual-number
+/// trace per parameter, so they are exact up to rounding.
+pub fn paraxial_focus_gradients(
+    system: &SequentialSystem,
+    ctx: TraceContext,
+    params: &[ParamId],
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    let mut efl = Vec::with_capacity(params.len());
+    let mut bfl = Vec::with_capacity(params.len());
+    for &id in params {
+        let tuned = TunedParams::<Dual>::seeded(system, id);
+        let (y, u) = paraxial_exit(system, ctx, &tuned);
+        if libm::fabs(u.v) < 1e-14 {
+            return None;
+        }
+        // EFL = −1/u, so dEFL = du/u².
+        efl.push(u.d / (u.v * u.v));
+        // BFL = −y/u, so dBFL = −(dy·u − y·du)/u².
+        bfl.push(-(y.d * u.v - y.v * u.d) / (u.v * u.v));
+    }
+    Some((efl, bfl))
 }
 
 #[cfg(test)]
@@ -145,5 +202,73 @@ mod tests {
         let ray = Ray::new(Vec3::new(0.0, 0.0, -0.01), Vec3::new(0.0, 0.0, 1.0));
         let ad = gradient_opd(&sys, &ray, ctx, &[ParamId::Thickness(0)])[0];
         assert!(close(ad, 1.5168, 1e-9), "ad = {ad}");
+    }
+}
+
+#[cfg(test)]
+mod paraxial_gradient_tests {
+    use super::*;
+    use tpt_optics_core::material::MaterialDatabase;
+    use tpt_optics_core::{Kelvin, Wavelength};
+
+    fn ctx() -> TraceContext {
+        TraceContext {
+            wavelength: Wavelength::from_nm(587.6),
+            temperature: Kelvin::from_celsius(20.0),
+        }
+    }
+
+    #[test]
+    fn focus_gradients_match_central_differences() {
+        let catalog = MaterialDatabase::presets();
+        let mut sys = SequentialSystem::new();
+        sys.push(
+            crate::sequential::SeqSurface::aspheric(crate::surface::Asphere::sphere(10.0), 12.5e-3),
+            5e-3,
+            crate::sequential::Medium::Material(catalog.get("bk7").unwrap()),
+        );
+        sys.push(
+            crate::sequential::SeqSurface::aspheric(
+                crate::surface::Asphere::sphere(-10.0),
+                12.5e-3,
+            ),
+            95e-3,
+            crate::sequential::Medium::Vacuum,
+        );
+        let params = [
+            ParamId::Curvature(0),
+            ParamId::Curvature(1),
+            ParamId::Thickness(0),
+        ];
+        let (efl_g, bfl_g) = paraxial_focus_gradients(&sys, ctx(), &params).unwrap();
+        for (k, &id) in params.iter().enumerate() {
+            let h = match id {
+                ParamId::Curvature(_) => 1e-4,
+                _ => 1e-8,
+            };
+            let shifted = |d: f64| {
+                let mut s = sys.clone();
+                match id {
+                    ParamId::Curvature(i) => s.surfaces[i].asphere.curvature += d,
+                    ParamId::Thickness(i) => s.thickness[i] += d,
+                    _ => {}
+                }
+                s
+            };
+            let efl = |s: &SequentialSystem| s.paraxial(ctx()).effective_focal_length().unwrap();
+            let bfl = |s: &SequentialSystem| s.paraxial(ctx()).back_focal_length().unwrap();
+            let fd_e = (efl(&shifted(h)) - efl(&shifted(-h))) / (2.0 * h);
+            let fd_b = (bfl(&shifted(h)) - bfl(&shifted(-h))) / (2.0 * h);
+            assert!(
+                (efl_g[k] - fd_e).abs() < 1e-5 * fd_e.abs().max(1e-6),
+                "EFL {k}: {} vs {fd_e}",
+                efl_g[k]
+            );
+            assert!(
+                (bfl_g[k] - fd_b).abs() < 1e-5 * fd_b.abs().max(1e-6),
+                "BFL {k}: {} vs {fd_b}",
+                bfl_g[k]
+            );
+        }
     }
 }

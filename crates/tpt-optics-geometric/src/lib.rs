@@ -37,6 +37,7 @@ pub mod presets;
 pub mod ray;
 pub mod sequential;
 pub mod snell;
+pub mod spec;
 pub mod surface;
 
 pub mod prelude {
