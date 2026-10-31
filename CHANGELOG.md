@@ -64,6 +64,46 @@ All notable changes to tpt-optics are documented here. Format follows
   integration test checks its d-line focal length against the 50.002 mm the tutorial
   reports. The two glasses take their datasheet d-line indices, so this is a d-line
   check only.
+- **Breaking, unreleased:** `tpt-optics-wave::coherence::van_cittert_zernike` takes
+  only the source samples. Its wavelength and distance never changed the samples,
+  so they were dropped; `vcz_separation` gives the separations. The output is now
+  real for a symmetric centred source (the `(−1)^k` phase is removed).
+- **Breaking, unreleased:** `Bpm2dConfig` and `Bpm3dConfig` have an `absorber_cells`
+  field (0 keeps the old behaviour). BPM edges can absorb light, which stops
+  wrap-around.
+- **Breaking, unreleased:** `tpt-optics analyze --json` writes a provenance header
+  (tool version, FNV-1a hash of the input, the self-check results) around the
+  analysis report, which is now under `"analysis"`.
+- **`tpt-optics-wave`** (added): `fresnel_sfft_2d`, `fraunhofer_2d`,
+  `fresnel_sampling_valid`, and `fft::fft_any` (any length, Bluestein). Twiddle
+  factors are evaluated directly, so long transforms no longer drift.
+- **`tpt-optics-polarization`** (added): `decomposition::lu_chipman`, the Lu–Chipman
+  depolarizer, retarder and diattenuator factors, checked on a known product.
+- **`tpt-optics-core`** (added): `material::vacuum_from_air_index` and
+  `air_from_vacuum_index`, using the Edlén air index.
+- **`tpt-optics-cli`**: `analyze --fan-svg N` writes the ray-fan SVG. The MCP server
+  has `trace` and `schema` tools. `info` lists the bindings and the schema command.
+- **`tpt-optics`**: the prelude exports the merit functions, the optimisers, `RayAxis`
+  and the tolerance types. The CI examples job loops over the example files.
+- **`tpt-optics-design`** (added): `merit::lateral_colour` and
+  `tolerance::sensitivity_table`.
+- **`tpt-optics-cli`** (added): `init --preset singlet`. The MCP server adds `trace`
+  and `schema`.
+- **`tpt-optics-verify`**: `verify_system` is tested on a mirror and on a glass plate.
+- **`tpt-optics-core`** (added): `material::SchottThermo` and `Material::with_schott_thermo`,
+  Schott's temperature model of the refractive index. It is checked against the N-SF5
+  datasheet: Sellmeier indices to 2e-5, and dn/dT slopes at 1060 nm, the e-line and the
+  cold range.
+- **`tpt-optics-design`** (added): `seidel::spherical_coefficient`, the on-axis
+  spherical coefficient `K = W040` fitted to the exact wavefront, with `S1 = 8K` (the
+  Zemax relation). Coma, astigmatism, Petzval and distortion are not implemented.
+- **`tpt-optics-geometric`** (added): `presets::double_gauss_100mm`, the f/1.7 double
+  Gauss lens from Table 1 of the COMSOL model (after Lautenbacher and Brendel, U.S.
+  2,784,643). Three radius signs were lost in extraction and are restored; the choice
+  is the only one of 256 that reproduces both 100.2 mm and 61.418 mm. The end-to-end
+  test checks both numbers.
+- **`tpt-optics-waveguide`**: `pwem_te_bands` requires an odd `n_g`. A strong
+  silicon-slab regression test checks the FEM fundamental against the analytic TE₀.
 - **`tpt-optics-waveguide`** (added): `thin_film::film_response`, the s- and
   p-polarised thin-film response at oblique incidence with complex layer and
   substrate indices. It is checked against the Fresnel equations for a bare
