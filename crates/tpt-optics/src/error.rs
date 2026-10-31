@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn parse_errors_have_kind_parse_and_expose_their_source() {
         use core::error::Error as _;
-        let e: Error = tpt_optics_io::text::DecodeError::InvalidUtf8.into();
+        let e: Error = tpt_optics_io::text::DecodeError::InvalidUtf16.into();
         assert_eq!(e.kind(), ErrorKind::Parse);
         assert!(e.source().is_some());
     }

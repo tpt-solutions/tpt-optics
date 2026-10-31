@@ -53,7 +53,8 @@ fn main() {
             sigma: 0.1e-3,
         },
     ];
-    let stats = analyze(&nominal, &tolerances, None, &merit, 500, 25e-6, 2024);
+    let stats = analyze(&nominal, &tolerances, None, &merit, 500, 25e-6, 2024)
+        .expect("the example's tolerances name valid parameters");
 
     println!("over 500 random builds (radius error σ = 0.1 mm):");
     println!("  mean RMS spot      : {:.2} µm", stats.mean * 1e6);

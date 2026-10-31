@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use tpt_optics::core::material::MaterialDatabase;
 use tpt_optics::core::{Kelvin, Wavelength};
 use tpt_optics::design::analysis::{analyze, AnalysisReport};
-use tpt_optics::design::operands::{optimize_system, Operand};
+use tpt_optics::design::operands::{optimize_system, Operand, RayAxis};
 use tpt_optics::design::optimize::{OptimizeResult, StopReason};
 use tpt_optics::geometric::builder::SystemBuilder;
 use tpt_optics::geometric::sequential::{SequentialSystem, TraceContext};
@@ -119,6 +119,21 @@ pub struct OperandSpec {
     /// Pupil height (mm) for `ray_height`.
     #[serde(default)]
     pub pupil_mm: f64,
+    /// Ray coordinate for `ray_height`: `"x"` (sagittal, the default) or
+    /// `"y"` (meridional, where the field angle acts).
+    #[serde(default)]
+    pub axis: RayAxisSpec,
+}
+
+/// Ray coordinate named in a design file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RayAxisSpec {
+    /// Sagittal (x) height.
+    #[default]
+    X,
+    /// Meridional (y) height.
+    Y,
 }
 
 fn default_weight() -> f64 {
@@ -348,6 +363,10 @@ fn operand_of(spec: &OperandSpec, heights_m: &[f64]) -> Result<Operand, DesignEr
             field_deg: spec.field_deg,
             pupil_height: mm(spec.pupil_mm),
             target: mm(spec.target),
+            axis: match spec.axis {
+                RayAxisSpec::X => RayAxis::X,
+                RayAxisSpec::Y => RayAxis::Y,
+            },
             weight: spec.weight,
         },
         other => return Err(DesignError(format!("unknown operand kind '{other}'"))),
