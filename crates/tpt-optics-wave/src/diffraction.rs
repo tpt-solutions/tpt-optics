@@ -89,6 +89,14 @@ pub fn fresnel_sfft(
     z: f64,
 ) -> Vec<Complex<f64>> {
     assert_eq!(field.len(), n, "field must be 1-D of length n");
+    assert!(
+        z.is_finite() && z > 0.0,
+        "distance must be positive and finite"
+    );
+    assert!(
+        dx > 0.0 && wavelength_m > 0.0,
+        "dx and wavelength must be positive"
+    );
     assert!(is_pow2(n), "grid size must be a power of two");
     let k = TAU / wavelength_m;
     let dx_out = wavelength_m * z / (n as f64 * dx);
@@ -128,6 +136,52 @@ pub fn fresnel_sfft(
         .collect()
 }
 
+/// Whether the single-FFT Fresnel method is valid for an `n`-sample grid of
+/// spacing `dx` at wavelength `λ` and distance `z`. The method needs
+/// `z ≥ N·dx²/λ`, so that the quadratic phase is resolved at the grid edge.
+#[must_use]
+pub fn fresnel_sampling_valid(n: usize, dx: f64, wavelength_m: f64, z: f64) -> bool {
+    z.is_finite() && z > 0.0 && z >= n as f64 * dx * dx / wavelength_m
+}
+
+/// Two-dimensional single-FFT Fresnel propagation of an `n × n` row-major
+/// field. The kernel is separable, so this is the 1-D transform applied along
+/// each row and then along each column. The output spacing is the same as
+/// [`fresnel_sfft`]'s. The same validity condition applies (see
+/// [`fresnel_sampling_valid`]).
+pub fn fresnel_sfft_2d(
+    field: &[Complex<f64>],
+    n: usize,
+    dx: f64,
+    wavelength_m: f64,
+    z: f64,
+) -> Vec<Complex<f64>> {
+    assert_eq!(field.len(), n * n, "field must be n×n");
+    separable_2d(field, n, |line| fresnel_sfft(line, n, dx, wavelength_m, z))
+}
+
+/// Apply a 1-D transform to every row, then to every column, of an `n × n`
+/// row-major grid.
+fn separable_2d<F>(field: &[Complex<f64>], n: usize, f: F) -> Vec<Complex<f64>>
+where
+    F: Fn(&[Complex<f64>]) -> Vec<Complex<f64>>,
+{
+    let mut rows = Vec::with_capacity(n * n);
+    for row in field.chunks_exact(n) {
+        rows.extend(f(row));
+    }
+    let mut out = alloc::vec![Complex::zero(); n * n];
+    let mut column = Vec::with_capacity(n);
+    for ix in 0..n {
+        column.clear();
+        column.extend((0..n).map(|iy| rows[iy * n + ix]));
+        for (iy, v) in f(&column).into_iter().enumerate() {
+            out[iy * n + ix] = v;
+        }
+    }
+    out
+}
+
 /// Fraunhofer far-field pattern: returns complex amplitude on a grid with
 /// sample spacing `dx_far = λ·z/(N·dx)`, including the quadratic observation
 /// phase (irrelevant for intensity).
@@ -139,6 +193,10 @@ pub fn fraunhofer(
     z: f64,
 ) -> Vec<Complex<f64>> {
     assert_eq!(field.len(), n, "field must be 1-D of length n");
+    assert!(
+        z.is_finite() && z > 0.0,
+        "distance must be positive and finite"
+    );
     assert!(is_pow2(n), "grid size must be a power of two");
     let k = TAU / wavelength_m;
     let dx_far = wavelength_m * z / (n as f64 * dx);
@@ -479,5 +537,108 @@ mod input_validation_tests {
     fn negative_index_is_refused() {
         let field = alloc::vec![Complex::real(1.0); 16];
         let _ = angular_spectrum(&field, 4, 1e-6, 1e-6, 1e-3, -1.0);
+    }
+}
+
+#[cfg(test)]
+mod two_d_propagation_tests {
+    use super::*;
+    use alloc::vec;
+
+    fn sample(n: usize, dx: f64, w: f64) -> Vec<Complex<f64>> {
+        (0..n)
+            .map(|i| {
+                let x = (i as f64 - n as f64 / 2.0) * dx;
+                Complex::real((-(x * x) / (w * w)).exp())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_d_fresnel_of_a_separable_field_is_the_product_of_1d_results() {
+        // The Fresnel kernel is separable, so the 2-D result of an outer
+        // product is the outer product of the 1-D results.
+        let (n, dx, wl, z) = (64, 2e-6, 0.6e-6, 0.05);
+        let a = sample(n, dx, 10e-6);
+        let b = sample(n, dx, 6e-6);
+        let mut field = vec![Complex::zero(); n * n];
+        for iy in 0..n {
+            for ix in 0..n {
+                field[iy * n + ix] = b[iy] * a[ix];
+            }
+        }
+        let out = fresnel_sfft_2d(&field, n, dx, wl, z);
+        let fa = fresnel_sfft(&a, n, dx, wl, z);
+        let fb = fresnel_sfft(&b, n, dx, wl, z);
+        for iy in 0..n {
+            for ix in 0..n {
+                let expect = fb[iy] * fa[ix];
+                assert!((out[iy * n + ix] - expect).abs() < 1e-9, "({ix},{iy})");
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "distance must be positive")]
+    fn zero_distance_is_refused() {
+        let a = sample(16, 1e-6, 4e-6);
+        let _ = fresnel_sfft(&a, 16, 1e-6, 0.6e-6, 0.0);
+    }
+
+    #[test]
+    fn sampling_validity_needs_distance_beyond_n_dx_squared_over_lambda() {
+        // The single-FFT Fresnel method needs z ≥ N·dx²/λ.
+        let (n, dx, wl) = (256, 10e-6, 0.5e-6);
+        let limit = n as f64 * dx * dx / wl;
+        assert!(!fresnel_sampling_valid(n, dx, wl, 0.5 * limit));
+        assert!(fresnel_sampling_valid(n, dx, wl, 2.0 * limit));
+    }
+}
+
+/// Two-dimensional Fraunhofer pattern of an `n × n` row-major field. The
+/// far-field kernel is separable, so this is the 1-D pattern applied along
+/// each row and then each column.
+pub fn fraunhofer_2d(
+    field: &[Complex<f64>],
+    n: usize,
+    dx: f64,
+    wavelength_m: f64,
+    z: f64,
+) -> Vec<Complex<f64>> {
+    assert_eq!(field.len(), n * n, "field must be n×n");
+    separable_2d(field, n, |line| fraunhofer(line, n, dx, wavelength_m, z))
+}
+
+#[cfg(test)]
+mod fraunhofer_2d_tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn two_d_fraunhofer_of_a_separable_field_is_the_product_of_1d_results() {
+        let (n, dx, wl, z) = (32, 4e-6, 0.6e-6, 1.0);
+        let a: Vec<Complex<f64>> = (0..n)
+            .map(|i: usize| Complex::real(if i.abs_diff(n / 2) < 4 { 1.0 } else { 0.0 }))
+            .collect();
+        let b: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::real(1.0 + i as f64 / n as f64))
+            .collect();
+        let mut field = vec![Complex::zero(); n * n];
+        for iy in 0..n {
+            for ix in 0..n {
+                field[iy * n + ix] = b[iy] * a[ix];
+            }
+        }
+        let out = fraunhofer_2d(&field, n, dx, wl, z);
+        let fa = fraunhofer(&a, n, dx, wl, z);
+        let fb = fraunhofer(&b, n, dx, wl, z);
+        for iy in 0..n {
+            for ix in 0..n {
+                assert!(
+                    (out[iy * n + ix] - fb[iy] * fa[ix]).abs() < 1e-9,
+                    "({ix},{iy})"
+                );
+            }
+        }
     }
 }

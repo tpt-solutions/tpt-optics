@@ -28,6 +28,32 @@ pub struct Bpm2dConfig {
     pub wavelength_m: f64,
     /// Reference (background) index.
     pub n0: f64,
+    /// Width (cells) of the absorbing layer at each transverse edge. The FFT
+    /// wraps the field, so light that reaches an edge would re-enter from the
+    /// other side. Zero disables the layer.
+    pub absorber_cells: usize,
+}
+
+/// Per-sample amplitude mask of an absorbing edge layer of `width` cells at
+/// each end of an `n`-sample axis. Inside the layer the loss rises smoothly
+/// (quadratically) to the edge, so the reflection from the layer is small.
+/// The mask is 1 everywhere else. Applied once per step, it removes light
+/// that reaches the edge before it can wrap.
+#[must_use]
+pub fn absorber_mask(n: usize, width: usize) -> Vec<f64> {
+    // Peak loss per step at the edge, as an amplitude factor exp(−ALPHA).
+    const ALPHA: f64 = 1.0;
+    (0..n)
+        .map(|i| {
+            let d = i.min(n - 1 - i);
+            if width == 0 || d >= width {
+                1.0
+            } else {
+                let s = (width - d) as f64 / width as f64;
+                libm::exp(-ALPHA * s * s)
+            }
+        })
+        .collect()
 }
 
 /// Propagate a 1-D field (`nx` samples) through the index profile
@@ -61,6 +87,7 @@ pub fn bpm_2d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm2dConfig) -> Vec
         })
         .collect();
 
+    let absorber = absorber_mask(cfg.nx, cfg.absorber_cells);
     let mut field = field.to_vec();
     for iz in 0..cfg.nz {
         // Half phase step (symmetrized splitting).
@@ -83,6 +110,9 @@ pub fn bpm_2d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm2dConfig) -> Vec
             cfg,
             0.5,
         );
+        for (v, a) in field.iter_mut().zip(absorber.iter()) {
+            *v = v.scale(*a);
+        }
     }
     field
 }
@@ -116,49 +146,65 @@ pub struct Bpm3dConfig {
     pub wavelength_m: f64,
     /// Reference index.
     pub n0: f64,
+    /// Width (cells) of the absorbing layer at each transverse edge, in x and
+    /// y. Zero disables it.
+    pub absorber_cells: usize,
 }
 
 /// Propagate a 2-D field (`nx·ny`, row-major) through `n(x, y, z)`.
+///
+/// The free-space transfer function is computed once, and the step runs in
+/// place. Each step ends with the edge absorber (see [`absorber_mask`]).
 pub fn bpm_3d(field: &[Complex<f64>], profile: &[f64], cfg: &Bpm3dConfig) -> Vec<Complex<f64>> {
     assert_eq!(field.len(), cfg.nx * cfg.ny);
     assert_eq!(profile.len(), cfg.nz * cfg.nx * cfg.ny);
     let k = TAU * cfg.n0 / cfg.wavelength_m;
     let dfx = 1.0 / (cfg.nx as f64 * cfg.dx);
     let dfy = 1.0 / (cfg.ny as f64 * cfg.dx);
+    // Free-space transfer function, once: it depends on the grid and step only.
+    let mut h = Vec::with_capacity(cfg.nx * cfg.ny);
+    for iy in 0..cfg.ny {
+        for ix in 0..cfg.nx {
+            let fx = if ix < cfg.nx / 2 {
+                ix as f64 * dfx
+            } else {
+                (ix as f64 - cfg.nx as f64) * dfx
+            };
+            let fy = if iy < cfg.ny / 2 {
+                iy as f64 * dfy
+            } else {
+                (iy as f64 - cfg.ny as f64) * dfy
+            };
+            let arg: f64 = 1.0
+                - libm::pow(cfg.wavelength_m * fx / cfg.n0, 2.0)
+                - libm::pow(cfg.wavelength_m * fy / cfg.n0, 2.0);
+            h.push(if arg >= 0.0 {
+                Complex::cis(k * cfg.dz * libm::sqrt(arg))
+            } else {
+                // Evanescent: decays over the step rather than being removed.
+                Complex::real(libm::exp(-k * cfg.dz * libm::sqrt(-arg)))
+            });
+        }
+    }
+    let absorber_x = absorber_mask(cfg.nx, cfg.absorber_cells);
+    let absorber_y = absorber_mask(cfg.ny, cfg.absorber_cells);
     let mut field = field.to_vec();
     for iz in 0..cfg.nz {
         let plane = &profile[iz * cfg.nx * cfg.ny..(iz + 1) * cfg.nx * cfg.ny];
         apply_index_phase_3d(&mut field, plane, cfg, 0.5);
-        // Free space.
-        let mut work = field.clone();
-        fft2(&mut work, cfg.ny, cfg.nx, false);
+        // Free space, in place.
+        fft2(&mut field, cfg.ny, cfg.nx, false);
+        for (v, h_v) in field.iter_mut().zip(h.iter()) {
+            *v *= *h_v;
+        }
+        fft2(&mut field, cfg.ny, cfg.nx, true);
+        apply_index_phase_3d(&mut field, plane, cfg, 0.5);
         for iy in 0..cfg.ny {
             for ix in 0..cfg.nx {
-                let fx = if ix < cfg.nx / 2 {
-                    ix as f64 * dfx
-                } else {
-                    (ix as f64 - cfg.nx as f64) * dfx
-                };
-                let fy = if iy < cfg.ny / 2 {
-                    iy as f64 * dfy
-                } else {
-                    (iy as f64 - cfg.ny as f64) * dfy
-                };
-                let arg: f64 = 1.0
-                    - libm::pow(cfg.wavelength_m * fx / cfg.n0, 2.0)
-                    - libm::pow(cfg.wavelength_m * fy / cfg.n0, 2.0);
-                let h = if arg >= 0.0 {
-                    Complex::cis(k * cfg.dz * libm::sqrt(arg))
-                } else {
-                    // Evanescent: decays over the step rather than being removed.
-                    Complex::real(libm::exp(-k * cfg.dz * libm::sqrt(-arg)))
-                };
-                work[iy * cfg.nx + ix] *= h;
+                let a = absorber_x[ix] * absorber_y[iy];
+                field[iy * cfg.nx + ix] = field[iy * cfg.nx + ix].scale(a);
             }
         }
-        fft2(&mut work, cfg.ny, cfg.nx, true);
-        field = work;
-        apply_index_phase_3d(&mut field, plane, cfg, 0.5);
     }
     field
 }
@@ -206,6 +252,7 @@ mod tests {
             dz,
             wavelength_m: wl,
             n0: 1.0,
+            absorber_cells: 0,
         };
         let out = bpm_2d(&gaussian_1d(n, dx, w0), &vec![1.0; cfg.nz * n], &cfg);
         // Measure 1/e² half-width.
@@ -247,6 +294,7 @@ mod tests {
             dz,
             wavelength_m: wl,
             n0: n_clad,
+            absorber_cells: 0,
         };
         let mut profile = vec![n_clad; cfg.nz * n];
         for iz in 0..cfg.nz {
@@ -301,6 +349,7 @@ mod tests {
             dz: 1e-6,
             wavelength_m: 1.0e-6,
             n0: 1.0,
+            absorber_cells: 0,
         };
         let mut input = vec![Complex::zero(); nx * ny];
         for j in 0..ny {
@@ -337,6 +386,7 @@ mod phase_convention_tests {
             dz,
             wavelength_m: lambda,
             n0,
+            absorber_cells: 0,
         };
         let field = vec![Complex::one(); 8];
         let profile = vec![n0 + dn; 8];
@@ -345,5 +395,94 @@ mod phase_convention_tests {
         let diff = (out[0].arg() - expect).rem_euclid(TAU);
         let wrapped = diff.min(TAU - diff);
         assert!(wrapped < 1e-9, "phase error {wrapped}");
+    }
+}
+
+#[cfg(test)]
+mod absorber_tests {
+    use super::*;
+    use alloc::vec;
+
+    fn energy(f: &[Complex<f64>]) -> f64 {
+        f.iter().map(|c| c.norm_sqr()).sum()
+    }
+
+    fn tilted_plane_wave(nx: usize, dx: f64, wl: f64, sin_t: f64) -> Vec<Complex<f64>> {
+        let k = TAU / wl;
+        (0..nx)
+            .map(|i| {
+                let x = (i as f64 - nx as f64 / 2.0) * dx;
+                Complex::cis(k * sin_t * x)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn absorber_leaves_a_centred_beam_alone() {
+        // A narrow beam far from the edges must not notice the absorber.
+        let (nx, dx, wl) = (256, 0.5e-6, 1e-6);
+        let mut field = vec![Complex::zero(); nx];
+        for (i, v) in field.iter_mut().enumerate() {
+            let x = (i as f64 - nx as f64 / 2.0) * dx;
+            *v = Complex::real((-(x * x) / (2.0 * (4e-6_f64).powi(2))).exp());
+        }
+        let profile = vec![1.0; 20 * nx];
+        let base = Bpm2dConfig {
+            nx,
+            nz: 20,
+            dx,
+            dz: 1e-6,
+            wavelength_m: wl,
+            n0: 1.0,
+            absorber_cells: 0,
+        };
+        let with = Bpm2dConfig {
+            absorber_cells: 40,
+            ..base
+        };
+        let a = bpm_2d(&field, &profile, &base);
+        let b = bpm_2d(&field, &profile, &with);
+        let max_diff = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (*x - *y).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_diff < 1e-9, "max difference {max_diff}");
+    }
+
+    #[test]
+    fn absorber_removes_light_that_would_wrap_around() {
+        // The wave leaves the window and would re-enter from the other side
+        // under periodic wrap-around. The absorber takes that energy instead.
+        let (nx, dx, wl) = (256, 0.5e-6, 1e-6);
+        let field = tilted_plane_wave(nx, dx, wl, 0.3);
+        let profile = vec![1.0; 600 * nx];
+        let base = Bpm2dConfig {
+            nx,
+            nz: 600,
+            dx,
+            dz: 1e-6,
+            wavelength_m: wl,
+            n0: 1.0,
+            absorber_cells: 0,
+        };
+        let e_in = energy(&field);
+        let e_open = energy(&bpm_2d(&field, &profile, &base));
+        let e_absorbed = energy(&bpm_2d(
+            &field,
+            &profile,
+            &Bpm2dConfig {
+                absorber_cells: 40,
+                ..base
+            },
+        ));
+        assert!(
+            (e_open - e_in).abs() < 1e-6 * e_in,
+            "open window loses energy"
+        );
+        assert!(
+            e_absorbed < 0.9 * e_in,
+            "absorber kept {e_absorbed} of {e_in}"
+        );
     }
 }

@@ -27,6 +27,7 @@ fn bpm_256x200(c: &mut Criterion) {
         dz: 0.5e-6,
         wavelength_m: 1.0e-6,
         n0: 1.5,
+        absorber_cells: 0,
     };
     let field: Vec<Complex<f64>> = (0..cfg.nx)
         .map(|i| {

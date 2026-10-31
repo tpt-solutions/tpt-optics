@@ -2,7 +2,7 @@
 
 Wave optics for [tpt-optics](../../README.md): scalar diffraction, Fourier
 optics, Gaussian beams, beam propagation and partial coherence. Everything
-rests on a from-scratch radix-2 FFT.
+rests on a from-scratch FFT.
 
 - **License:** MIT OR Apache-2.0
 - **`no_std`:** yes (`alloc` required)
@@ -11,9 +11,11 @@ rests on a from-scratch radix-2 FFT.
 
 ## Features
 
-- **Radix-2 FFT.** Complex 1-D and 2-D transforms in both directions.
+- **FFT.** Radix-2 complex 1-D and 2-D transforms in both directions. `fft_any`
+  handles any length, using Bluestein's chirp-z algorithm.
 - **Scalar diffraction.** Angular-spectrum propagation, single-FFT Fresnel
-  propagation and Fraunhofer (far-field) propagation.
+  propagation and Fraunhofer (far-field) propagation, in one and two
+  dimensions.
 - **Gaussian beams.** q-parameter beam representation, the ABCD law for
   beam transformation, Rayleigh range and thin-lens mode matching.
 - **Fourier optics.** Lens Fourier transforms, and PSF, OTF and MTF computed
@@ -73,20 +75,19 @@ for (a, b) in field.iter().zip(original.iter()) {
 
 ## Grid conventions
 
-Field grids are square, power-of-two samples with uniform spacing. Lengths are
-metres. Functions that take a grid length `n` or dimensions `n × m` assert
-that the dimensions are powers of two.
+Field grids are uniformly spaced samples, and lengths are metres. `fft`, `fft2`
+and `ifft2` assert power-of-two sizes. `fft::fft_any` accepts any length.
 
 ## Module map
 
 | Module | Contents |
 |---|---|
-| `fft` | Radix-2 complex FFT, 1-D and 2-D, forward and inverse |
-| `diffraction` | `angular_spectrum`, `fresnel_sfft`, `fraunhofer` |
+| `fft` | Radix-2 complex FFT, 1-D and 2-D, forward and inverse; `fft_any` for any length |
+| `diffraction` | `angular_spectrum`, `fresnel_sfft`, `fresnel_sfft_2d`, `fraunhofer`, `fraunhofer_2d`, `intensity` |
 | `gaussian` | `GaussianBeam`, `rayleigh_range`, `mode_match_thin_lens` |
-| `fourier` | `lens_fourier_transform`, `psf_from_pupil`, `mtf_from_psf` |
-| `bpm` | `bpm_2d`, `bpm_3d`, `Bpm2dConfig`, `Bpm3dConfig` |
-| `coherence` | `gaussian_schell_mu`, `van_cittert_zernike` |
+| `fourier` | `lens_fourier_transform`, `psf_from_pupil`, `mtf_from_psf`, `strehl_ratio`, `diffraction_limited_circular_mtf` |
+| `bpm` | `bpm_2d`, `bpm_3d`, `Bpm2dConfig`, `Bpm3dConfig`, `absorber_mask` |
+| `coherence` | `gaussian_schell_mu`, `van_cittert_zernike`, `vcz_separation`, `disk_source_mu` |
 
 Import the common items with `use tpt_optics_wave::prelude::*;`.
 

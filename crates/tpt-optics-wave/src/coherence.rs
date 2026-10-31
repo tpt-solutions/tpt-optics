@@ -19,26 +19,35 @@ pub fn gaussian_schell_mu(delta_x: f64, sigma_mu: f64) -> f64 {
     exp(-delta_x * delta_x / (2.0 * sigma_mu * sigma_mu))
 }
 
-/// Complex degree of coherence in the far field (distance `z`) of a 1-D
-/// spatially incoherent source with intensity `source_intensity` sampled at
-/// `source_dx`, via the van Cittert–Zernike theorem.
+/// Complex degree of coherence of a 1-D spatially incoherent source, by the
+/// far-field van Cittert–Zernike theorem. `source_intensity` is sampled on an
+/// `n`-point grid (a power of two) with the source centred on sample `n/2`.
 ///
-/// Returns the normalized complex degree of coherence μ(Δx) sampled at
-/// separations `Δx_k = k·λ·z/(N·dx)` (the far-field diffraction scaling);
-/// μ(0) = 1 by construction.
-pub fn van_cittert_zernike(
-    source_intensity: &[f64],
-    _wavelength_m: f64,
-    _z: f64,
-) -> Vec<Complex<f64>> {
+/// Bin `k` of the result is μ at separation
+/// `Δx_k = vcz_separation(k, n, dx, λ, z)`, where `dx` is the source sample
+/// spacing, `λ` the wavelength and `z` the distance. The wavelength and
+/// distance do not change the samples, only the separations, which is why
+/// they are not arguments here. The result is normalised so that μ(0) = 1.
+///
+/// The transform of a source centred on `n/2` carries a linear phase
+/// `(−1)^k`. It is removed, so μ is real for a symmetric source. This is the
+/// far-field relation. The near-field (Fresnel) form has an extra quadratic
+/// phase, which is not included.
+pub fn van_cittert_zernike(source_intensity: &[f64]) -> Vec<Complex<f64>> {
     let n = source_intensity.len();
     assert!(
         crate::fft::is_pow2(n),
         "source length must be a power of two"
     );
-    // μ(Δx) ∝ FT{I(x')} evaluated at spatial frequency f = Δx/(λz).
+    // μ(Δx) ∝ FT{I(x')} at spatial frequency f = Δx/(λz).
     let mut spec: Vec<Complex<f64>> = source_intensity.iter().map(|v| Complex::real(*v)).collect();
     crate::fft::fft(&mut spec);
+    // Undo the shift of the source centre from sample 0 to sample n/2.
+    for (k, v) in spec.iter_mut().enumerate() {
+        if k % 2 == 1 {
+            *v = -*v;
+        }
+    }
     let dc = spec[0];
     assert!(dc.abs() > 0.0, "source intensity must be non-zero");
     spec.iter().map(|c| *c / dc).collect()
@@ -110,7 +119,7 @@ mod tests {
                 }
             })
             .collect();
-        let mu = van_cittert_zernike(&source, wl, z);
+        let mu = van_cittert_zernike(&source);
         assert!(close(mu[0].abs(), 1.0, 1e-9));
         for k in [1usize, 4, 10, 16] {
             let delta = vcz_separation(k, n, dx, wl, z);
@@ -138,14 +147,13 @@ mod tests {
         // Pick B = N·dx/8 → argument = π·k/8.
         let n = 64;
         let dx = 10e-6;
-        let wl = 600e-9;
-        let z = 1.0;
+
         let baseline = n as f64 * dx / 8.0; // 80 µm
         let mut src = vec![0.0; n];
         let off = (baseline / 2.0 / dx).round() as usize; // 4 bins
         src[n / 2 + off] = 1.0;
         src[n / 2 - off] = 1.0;
-        let mu = van_cittert_zernike(&src, wl, z);
+        let mu = van_cittert_zernike(&src);
         assert!((mu[0].re - 1.0).abs() < 1e-9);
         assert!(mu[4].abs() < 0.15, "fringe null near k=4: {}", mu[4].abs());
         assert!(
@@ -160,5 +168,33 @@ mod tests {
         // First zero of 2J1(u)/u at u = 3.8317.
         assert!(bessel_j(1, 3.83) > 0.0);
         assert!(bessel_j(1, 3.84) < 0.0);
+    }
+}
+
+#[cfg(test)]
+mod centring_tests {
+    use super::*;
+
+    #[test]
+    fn centred_symmetric_source_has_a_real_positive_coherence_below_its_first_zero() {
+        // For a symmetric disk centred on sample n/2, μ is real and positive
+        // up to its first zero. A stray (−1)^k factor made odd bins negative.
+        let n = 128;
+        let dx = 5e-6;
+        let diameter = 8.0 * dx;
+        let source: Vec<f64> = (0..n)
+            .map(|i| {
+                let x = (i as f64 - n as f64 / 2.0) * dx;
+                if x.abs() < diameter / 2.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let mu = van_cittert_zernike(&source);
+        for (k, m) in mu.iter().enumerate().take(16) {
+            assert!(m.re > 0.0 && m.im.abs() < 1e-12, "k={k}: {:?}", *m);
+        }
     }
 }

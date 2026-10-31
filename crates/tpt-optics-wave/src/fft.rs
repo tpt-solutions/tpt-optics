@@ -41,20 +41,67 @@ pub fn fft_raw(data: &mut [Complex<f64>], inverse: bool) {
         let ang = sign * TAU / len as f64;
         // Twiddles for this stage: exp(i·ang·k), k = 0..len/2.
         let half = len / 2;
-        let w_step = Complex::cis(ang);
+        // Each twiddle is evaluated directly. Multiplying by a fixed step
+        // instead accumulates rounding error along the stage.
+        let twiddles: Vec<Complex<f64>> = (0..half).map(|k| Complex::cis(ang * k as f64)).collect();
         let mut start = 0;
         while start < n {
-            let mut w = Complex::one();
-            for k in 0..half {
+            for (k, w) in twiddles.iter().enumerate() {
                 let u = data[start + k];
-                let v = data[start + k + half] * w;
+                let v = data[start + k + half] * *w;
                 data[start + k] = u + v;
                 data[start + k + half] = u - v;
-                w *= w_step;
             }
             start += len;
         }
         len <<= 1;
+    }
+}
+
+/// Unnormalised DFT of any length, with the same convention as [`fft`]
+/// (`inverse` flips the sign of the exponent and does not divide by `N`).
+///
+/// Power-of-two lengths use the radix-2 transform. Other lengths use
+/// Bluestein's chirp-z algorithm, which writes the DFT as a convolution and
+/// evaluates it with power-of-two transforms of length at least `2N − 1`.
+pub fn fft_any(data: &mut [Complex<f64>], inverse: bool) {
+    let n = data.len();
+    if n <= 1 || is_pow2(n) {
+        fft_raw(data, inverse);
+        return;
+    }
+    // jk = (j² + k² − (k − j)²)/2, so e^{s·2πi·jk/N} factors into a chirp in j,
+    // a chirp in k, and a kernel in k − j. The phase of j² is taken modulo 2N,
+    // which leaves e^{s·iπ·j²/N} unchanged and keeps the argument small.
+    let sign = if inverse { 1.0 } else { -1.0 };
+    let chirp: Vec<Complex<f64>> = (0..n)
+        .map(|j| {
+            let jj = (j * j) % (2 * n);
+            Complex::cis(sign * core::f64::consts::PI * jj as f64 / n as f64)
+        })
+        .collect();
+    let m = (2 * n - 1).next_power_of_two();
+    let mut a = alloc::vec![Complex::zero(); m];
+    for j in 0..n {
+        a[j] = data[j] * chirp[j];
+    }
+    // The kernel conj(chirp) is symmetric in its index, so index −j is placed at M − j.
+    let mut b = alloc::vec![Complex::zero(); m];
+    b[0] = chirp[0].conj();
+    for j in 1..n {
+        let v = chirp[j].conj();
+        b[j] = v;
+        b[m - j] = v;
+    }
+    fft_raw(&mut a, false);
+    fft_raw(&mut b, false);
+    for (x, y) in a.iter_mut().zip(&b) {
+        *x *= *y;
+    }
+    fft_raw(&mut a, true);
+    let scale = 1.0 / m as f64;
+    for k in 0..n {
+        data[k] = chirp[k] * a[k].scale(scale);
     }
 }
 
@@ -239,5 +286,68 @@ mod tests {
     fn non_pow2_panics() {
         let mut d = vec![Complex::zero(); 12];
         fft(&mut d);
+    }
+}
+
+#[cfg(test)]
+mod any_length_tests {
+    use super::*;
+
+    fn naive_dft(x: &[Complex<f64>]) -> Vec<Complex<f64>> {
+        let n = x.len();
+        (0..n)
+            .map(|k| {
+                x.iter().enumerate().fold(Complex::zero(), |acc, (j, v)| {
+                    let phase = -TAU * ((k * j) % n) as f64 / n as f64;
+                    acc + *v * Complex::cis(phase)
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn any_length_matches_the_naive_dft() {
+        for &n in &[1usize, 2, 3, 7, 12, 100] {
+            let x: Vec<Complex<f64>> = (0..n)
+                .map(|j| Complex::new((j as f64 * 0.37).sin(), (j as f64 * 0.11).cos()))
+                .collect();
+            let mut y = x.clone();
+            fft_any(&mut y, false);
+            let want = naive_dft(&x);
+            for (a, b) in y.iter().zip(&want) {
+                assert!((*a - *b).abs() < 1e-9 * n as f64, "n={n}: {a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn any_length_round_trips() {
+        let n = 60;
+        let x: Vec<Complex<f64>> = (0..n).map(|j| Complex::real(j as f64)).collect();
+        let mut y = x.clone();
+        fft_any(&mut y, false);
+        fft_any(&mut y, true);
+        for (a, b) in y.iter().zip(&x) {
+            assert!((a.scale(1.0 / n as f64) - *b).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn long_single_tone_has_no_leakage() {
+        // Twiddles built by repeated multiplication drifted over a long stage,
+        // leaking energy into other bins. Direct evaluation keeps it at rounding.
+        let n = 1 << 16;
+        let bin = 3;
+        let mut x: Vec<Complex<f64>> = (0..n)
+            .map(|j| Complex::cis(TAU * (bin * j) as f64 / n as f64))
+            .collect();
+        fft(&mut x);
+        let leak = x
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| *k != bin)
+            .map(|(_, v)| v.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(leak < 1e-8 * n as f64, "leakage {leak}");
     }
 }
