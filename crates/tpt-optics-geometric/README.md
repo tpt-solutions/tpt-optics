@@ -25,6 +25,11 @@ non-sequential Monte-Carlo stray-light tracing.
 - **Differentiable tracing.** Every trace kernel is generic over `Scalar`.
   Seeding a `Dual` parameter gives exact first derivatives, which the design
   crate uses for gradient-based optimization.
+- **System builder and presets.** `SystemBuilder` assembles a sequential
+  system from a lens prescription, and `presets` provides a plano-convex lens,
+  a singlet, an achromatic doublet and two triplets.
+- **Serializable specs.** With the `serde` feature, a system can be written as
+  a `SystemSpec`, with materials referenced by name.
 - **Global placement helpers** in the `frame` module.
 
 ## Installation
@@ -36,6 +41,9 @@ tpt-optics-geometric = "0.1"
 
 Or enable the `geometric` feature (on by default) of the umbrella crate
 [`tpt-optics`](../tpt-optics).
+
+The `serde` feature, which is off by default, derives serialization for
+`SystemSpec`.
 
 ## Quick start
 
@@ -67,10 +75,13 @@ systems in a global frame.
 | `surface` | `Plane`, `Sphere`, `Asphere`, `Zernike` and the `OpticalSurface` trait |
 | `ray` | `Ray<T>` with normalisation, propagation and frame transforms |
 | `snell` | `refract`, `reflect` and `diffract` vector laws |
-| `abcd` | ABCD matrices for free space, thin lenses, interfaces and mirrors |
+| `abcd` | ABCD matrices for free space, thin lenses, refracting surfaces, mirrors and the Keplerian telescope |
 | `nseq` | `NsScene`, `NsObject` and `ScatterModel` for non-sequential tracing |
-| `differentiable` | Dual-number helpers for gradient computation through a trace |
-| `frame` | Local to global coordinate frames |
+| `builder` | `SystemBuilder` and `BuildError` for constructing a sequential system from a prescription |
+| `presets` | `plano_convex`, `singlet`, `achromatic_doublet`, `cooke_triplet_50mm`, `optimised_triplet_100mm` |
+| `spec` | `SystemSpec` and `SurfaceSpec`, a serializable form of a sequential system (`serde` feature) |
+| `differentiable` | `gradient_of` and `paraxial_focus_gradients`, exact gradients through a trace |
+| `frame` | `Frame`, local to global coordinate frames |
 
 Import the common items with `use tpt_optics_geometric::prelude::*;`.
 

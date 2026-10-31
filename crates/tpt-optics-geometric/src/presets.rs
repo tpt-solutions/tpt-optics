@@ -304,6 +304,37 @@ pub fn cooke_triplet_50mm(catalog: &MaterialDatabase) -> Result<SequentialSystem
         .build()
 }
 
+/// Double Gauss lens, 100.2 mm focal length, about f/1.7 (entrance pupil
+/// 58.9 mm), with six elements and a stop, after Lautenbacher and Brendel
+/// (Agfa, U.S. Patent 2,784,643). The prescription is Table 1 of the COMSOL
+/// "Double Gauss Lens" model; the three radii whose minus signs were lost in
+/// extraction are restored, and the choice is confirmed by the focal length and
+/// back focal distance (61.418 mm). Blank radii in the table are flat surfaces.
+///
+/// The catalogue must hold `s-lam3` (OHARA S-LAM3), `s-bah11` (OHARA S-BAH11) and
+/// `n-sf5` (Schott N-SF5).
+///
+/// # Errors
+/// Returns the [`BuildError`] of the underlying prescription, for example an
+/// unknown glass.
+pub fn double_gauss_100mm(catalog: &MaterialDatabase) -> Result<SequentialSystem, BuildError> {
+    SystemBuilder::new(catalog)
+        .surface(75.050e-3, 33.0e-3, 9.000e-3, "s-lam3")
+        .surface(270.700e-3, 33.0e-3, 0.100e-3, "")
+        .surface(39.270e-3, 27.5e-3, 16.510e-3, "s-bah11")
+        .surface(0.0, 27.5e-3, 0.0, "") // lens 2 back: flat, cemented to lens 3
+        .surface(0.0, 24.5e-3, 2.000e-3, "n-sf5") // lens 3 front: flat
+        .surface(25.650e-3, 19.5e-3, 10.990e-3, "")
+        .surface(0.0, 18.6e-3, 13.000e-3, "") // stop
+        .surface(-31.870e-3, 18.5e-3, 7.030e-3, "n-sf5") // lens 4
+        .surface(0.0, 18.5e-3, 0.0, "") // lens 4 back: flat, cemented to lens 5
+        .surface(0.0, 21.0e-3, 8.980e-3, "s-lam3") // lens 5 front: flat
+        .surface(-43.510e-3, 21.0e-3, 0.100e-3, "")
+        .surface(221.140e-3, 23.0e-3, 7.980e-3, "s-bah11") // lens 6
+        .surface(-88.790e-3, 23.0e-3, 61.418e-3, "")
+        .build()
+}
+
 #[cfg(test)]
 mod achromat_tests {
     use super::*;
