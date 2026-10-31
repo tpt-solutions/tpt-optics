@@ -1,15 +1,20 @@
 //! Zemax `.zmx` text-format sequential files (pragmatic subset).
 //!
-//! Supported keywords per surface: `SURF`, `CURV` (curvature + asphere
-//! terms), `DISZ` (thickness; `INFINITY` supported), `GLAS` (name + d/Abbe
-//! + index hint), `CONI`, `DIAM`, `STOP`, `NAME`, `TYPE STANDARD`. Header: `MODE SEQ`.
+//! Supported keywords per surface: `SURF`, `CURV` (curvature; solve fields
+//! are ignored), `DISZ` (thickness; `INFINITY` supported), `GLAS` (name +
+//! d/Abbe + index hint), `CONI`, `DIAM`, `STOP`, `NAME` (quotes allowed),
+//! `TYPE STANDARD`, and `TYPE EVENASPH` with `PARM 1`–`PARM 7`. Header:
+//! `MODE SEQ`, and `UNIT` (`MM`, `CM`, `M`, `IN`), which must come before the
+//! first surface. Lengths, curvatures and asphere terms are converted to mm
+//! on read.
 //!
 //! Keywords that would change the geometry but are not modelled are errors,
-//! not silent drops: `TYPE` other than `STANDARD`, and `PARM` with a non-zero
-//! value. Other unknown keywords (`FNUM`, `WAVL`, ...) are ignored. `STOP`
-//! is kept in the document but does not change the trace. The object-space
-//! `DISZ` is kept on surface 0 but is not used, because rays are launched at
-//! the first traced surface.
+//! not silent drops: `TYPE` other than `STANDARD` or `EVENASPH`, a non-zero
+//! `PARM` on a standard surface, and `PARM 8` (the r¹⁸ term, which this
+//! crate does not store). Other unknown keywords (`FNUM`, `WAVL`, ...) are
+//! ignored. `STOP` is kept in the document but does not change the trace.
+//! The object-space `DISZ` is kept on surface 0 but is not used, because rays
+//! are launched at the first traced surface.
 
 use std::string::{String, ToString};
 use std::vec::Vec;
@@ -42,8 +47,9 @@ pub struct ZmxSurface {
     pub name: String,
     /// Curvature (1/m). The file stores CURV in 1/mm (lens units).
     pub curvature: f64,
-    /// Even asphere terms following CURV, stored in lens units (mm) as in
-    /// the file; [`to_sequential`] converts them to metres.
+    /// Even asphere terms in mm: `asphere[i]` multiplies r^(2(i+1)). Read
+    /// from `PARM k` (which sets `asphere[k]`) for `TYPE EVENASPH`, after
+    /// the file's `UNIT` is applied. [`to_sequential`] converts them to metres.
     pub asphere: [f64; 8],
     /// Conic constant.
     pub conic: f64,
@@ -88,6 +94,13 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
     let text = text.trim_start_matches('\u{feff}');
     let mut doc = ZmxDocument::default();
     let mut current: Option<ZmxSurface> = None;
+    // Millimetres per length unit of the file. `UNIT` must come before the
+    // first surface, so every length in the file has one scale.
+    let mut unit_mm = 1.0;
+    let mut seen_surface = false;
+    // Whether the current surface is `TYPE EVENASPH`, whose PARM lines are
+    // its asphere coefficients. A standard surface must have zero PARM lines.
+    let mut even_asphere = false;
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx + 1;
         let line = raw.trim();
@@ -98,6 +111,29 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
         let key = tokens.next().unwrap_or("").to_ascii_uppercase();
         let args: Vec<&str> = tokens.collect();
         match key.as_str() {
+            "UNIT" => {
+                if seen_surface {
+                    return Err(ZmxError {
+                        line: line_no,
+                        message: "UNIT must come before the first SURF".into(),
+                    });
+                }
+                unit_mm = match args.first().map(|u| u.to_ascii_uppercase()).as_deref() {
+                    Some("MM") => 1.0,
+                    Some("CM") => 10.0,
+                    Some("M") => 1000.0,
+                    Some("IN" | "INCH" | "INCHES") => 25.4,
+                    other => {
+                        return Err(ZmxError {
+                            line: line_no,
+                            message: std::format!(
+                                "length unit '{}' is not supported (MM, CM, M or IN)",
+                                other.unwrap_or("")
+                            ),
+                        })
+                    }
+                };
+            }
             "MODE" => {
                 if args
                     .first()
@@ -114,7 +150,8 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
             }
             "NAME" => {
                 // Inside a SURF block the name belongs to that surface.
-                let name = args.join(" ");
+                let joined = args.join(" ");
+                let name = unquote(&joined).to_string();
                 match current.as_mut() {
                     Some(c) => c.name = name,
                     None => doc.name = name,
@@ -125,17 +162,18 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                     doc.surfaces.push(s);
                 }
                 current = Some(ZmxSurface::default());
+                seen_surface = true;
+                even_asphere = false;
             }
             "CURV" => {
                 let c = current.as_mut().ok_or(ZmxError {
                     line: line_no,
                     message: "CURV before SURF".into(),
                 })?;
-                // CURV is in 1/mm; store 1/m.
-                c.curvature = parse_f64(args.first(), line_no)? * 1e3;
-                for (i, v) in args.iter().skip(1).take(8).enumerate() {
-                    c.asphere[i] = parse_f64(Some(v), line_no)?;
-                }
+                // CURV is 1/unit; store 1/m. Fields after the first are solve
+                // and pickup settings, not coefficients, so they are ignored.
+                let unit_m = unit_mm * 1e-3;
+                c.curvature = parse_f64(args.first(), line_no)? / unit_m;
             }
             "CONI" => {
                 let c = current.as_mut().ok_or(ZmxError {
@@ -155,7 +193,7 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                 {
                     f64::INFINITY
                 } else {
-                    parse_f64(args.first(), line_no)? * 1e-3 // mm → m
+                    parse_f64(args.first(), line_no)? * unit_mm * 1e-3 // unit → m
                 };
             }
             "GLAS" => {
@@ -164,8 +202,9 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                     message: "GLAS before SURF".into(),
                 })?;
                 if let Some(name) = args.first() {
+                    let name = unquote(name);
                     if !name.eq_ignore_ascii_case("AIR") {
-                        c.glass = (*name).to_string();
+                        c.glass = name.to_string();
                     }
                 }
             }
@@ -174,7 +213,8 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                     line: line_no,
                     message: "DIAM before SURF".into(),
                 })?;
-                c.semi_diameter = parse_f64(args.first(), line_no)? * 1e-3; // mm → m
+                c.semi_diameter = parse_f64(args.first(), line_no)? * unit_mm * 1e-3;
+                // unit → m
             }
             "STOP" => {
                 let c = current.as_mut().ok_or(ZmxError {
@@ -184,28 +224,52 @@ pub fn parse(text: &str) -> Result<ZmxDocument, ZmxError> {
                 c.stop = true;
             }
             "TYPE" => {
-                // Only standard surfaces are modelled. Other types (EVENASPH,
-                // ...) keep their shape in PARM lines, which are not read.
+                // STANDARD and EVENASPH are modelled. Other types have shapes
+                // this crate cannot represent, so they are errors.
                 let kind = args.first().copied().unwrap_or("");
-                if !kind.eq_ignore_ascii_case("STANDARD") {
+                if kind.eq_ignore_ascii_case("EVENASPH") {
+                    even_asphere = true;
+                } else if kind.eq_ignore_ascii_case("STANDARD") {
+                    even_asphere = false;
+                } else {
                     return Err(ZmxError {
                         line: line_no,
                         message: std::format!(
-                            "surface type '{kind}' is not supported (only STANDARD)"
+                            "surface type '{kind}' is not supported (STANDARD or EVENASPH)"
                         ),
                     });
                 }
             }
             "PARM" => {
-                // A non-zero parameter belongs to a non-standard surface type
-                // and would be dropped, so it is an error.
+                let c = current.as_mut().ok_or(ZmxError {
+                    line: line_no,
+                    message: "PARM before SURF".into(),
+                })?;
                 let value = parse_f64(args.get(1), line_no)?;
-                if value != 0.0 {
-                    return Err(ZmxError {
-                        line: line_no,
-                        message: "non-zero surface parameters (PARM) are not supported".into(),
-                    });
+                if !even_asphere {
+                    // A standard surface has no parameters. A non-zero one
+                    // would describe a shape this crate does not model.
+                    if value != 0.0 {
+                        return Err(ZmxError {
+                            line: line_no,
+                            message: "non-zero PARM needs TYPE EVENASPH".into(),
+                        });
+                    }
+                    continue;
                 }
+                // PARM k is the coefficient of r^(2k+2), in file units, and
+                // lands in `asphere[k]`, which multiplies r^(2(k+1)). The
+                // stored value is in mm, so z = a·r^(2k+2) keeps its meaning
+                // under any UNIT: a_mm = a·unit_mm^(−(2k+1)).
+                let k = args
+                    .first()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|k| (1..=7).contains(k))
+                    .ok_or(ZmxError {
+                        line: line_no,
+                        message: "PARM index must be 1 to 7 (the r^4 to r^16 terms)".into(),
+                    })?;
+                c.asphere[k] = value * unit_mm.powi(-(2 * k as i32 + 1));
             }
             _ => {} // tolerated unknown keywords (FNUM, WAVL, ...)
         }
@@ -227,11 +291,23 @@ fn parse_f64(v: Option<&&str>, line: usize) -> Result<f64, ZmxError> {
         })
 }
 
-/// Serialize a document back to text form.
+/// Strip one pair of surrounding double quotes, as Zemax writes them around
+/// names that contain spaces or are empty.
+fn unquote(text: &str) -> &str {
+    text.strip_prefix('"')
+        .and_then(|t| t.strip_suffix('"'))
+        .unwrap_or(text)
+}
+
+/// Serialize a document back to text form, in millimetres.
+///
+/// An even-asphere surface is written as `TYPE EVENASPH` with `PARM 1` to
+/// `PARM 7`, from `asphere[1..8]`. The r² term `asphere[0]` has no PARM line,
+/// so this form cannot carry it; the crate's surfaces do not use it.
 pub fn write(doc: &ZmxDocument) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    out.push_str("MODE SEQ\n");
+    out.push_str("MODE SEQ\nUNIT MM\n");
     if !doc.name.is_empty() {
         let _ = writeln!(out, "NAME {}", doc.name);
     }
@@ -243,13 +319,18 @@ pub fn write(doc: &ZmxDocument) -> String {
         if s.stop {
             out.push_str("STOP\n");
         }
-        // CURV: curvature in 1/mm, then all eight asphere terms in lens units.
-        // Shortest exact form (`{:e}`), so coefficients of any size round-trip.
-        let mut curv = std::format!("CURV {:.12}", s.curvature / 1e3);
-        for a in &s.asphere {
-            let _ = write!(curv, " {a:e}");
+        let aspheric = s.asphere[1..].iter().any(|a| *a != 0.0);
+        if aspheric {
+            out.push_str("TYPE EVENASPH\n");
         }
-        let _ = writeln!(out, "{curv}");
+        // CURV is curvature in 1/mm, with no solve fields.
+        let _ = writeln!(out, "CURV {:.12}", s.curvature / 1e3);
+        if aspheric {
+            // Shortest exact form (`{:e}`), so coefficients of any size round-trip.
+            for (k, a) in s.asphere.iter().enumerate().skip(1) {
+                let _ = writeln!(out, "PARM {k} {a:e}");
+            }
+        }
         let _ = writeln!(out, "CONI {:.12}", s.conic);
         if !s.glass.is_empty() {
             let _ = writeln!(out, "GLAS {} 0 0 0 0", s.glass);
@@ -358,6 +439,12 @@ pub fn to_sequential(
         sys.push(surface, thickness, medium_after);
     }
     let _ = (wl, temperature);
+    // An infinite gap in the middle of the system (`DISZ INFINITY` on a
+    // surface other than the last) has no path, so it is an error here.
+    sys.validate().map_err(|e| ZmxError {
+        line: 0,
+        message: e.to_string(),
+    })?;
     Ok(sys)
 }
 
@@ -624,12 +711,72 @@ mod unsupported_and_precision_tests {
     use super::*;
 
     #[test]
-    fn aspheric_surface_type_is_an_error() {
-        // An EVENASPH surface keeps its shape in PARM lines. Loading it as a
-        // sphere would give the wrong geometry, so it must be rejected.
-        let text = "MODE SEQ\nSURF\nTYPE EVENASPH\nCURV 0.01\nPARM 1 0.5\n";
-        let err = parse(text).unwrap_err();
+    fn even_asphere_coefficients_are_read_from_parm() {
+        // PARM k is the coefficient of r^(2k+2), in lens units (mm here), so
+        // PARM 1 is the r⁴ term and sits in `asphere[1]`.
+        let text = "MODE SEQ\nSURF\nTYPE EVENASPH\nCURV 0.01\nPARM 1 0.5\nPARM 2 -2e-4\n";
+        let doc = parse(text).unwrap();
+        assert_eq!(doc.surfaces[0].asphere[0], 0.0);
+        assert_eq!(doc.surfaces[0].asphere[1], 0.5);
+        assert_eq!(doc.surfaces[0].asphere[2], -2e-4);
+    }
+
+    #[test]
+    fn unknown_surface_type_is_an_error() {
+        let err = parse("MODE SEQ\nSURF\nTYPE TOROIDAL\nCURV 0.01\n").unwrap_err();
         assert_eq!(err.line, 3, "{err}");
+    }
+
+    #[test]
+    fn curv_solve_fields_are_not_asphere_terms() {
+        // CURV 0.01 0 0 1 0 0 0: the extra fields are solve/pickup settings
+        // and must not become asphere coefficients.
+        let doc = parse("MODE SEQ\nSURF\nCURV 0.01 0 0 1 0 0 0\n").unwrap();
+        assert_eq!(doc.surfaces[0].asphere, [0.0; 8]);
+    }
+
+    #[test]
+    fn unit_inches_scales_lengths_and_curvature() {
+        // One inch lens: R = 2 in (curvature 0.5 in⁻¹), 0.25 in thick, 1 in
+        // semi-diameter. All of them are 25.4 times the mm reading.
+        let text = "MODE SEQ\nUNIT IN\nSURF\nCURV 0.5\nDISZ 0.25\nDIAM 1\n";
+        let doc = parse(text).unwrap();
+        let s = &doc.surfaces[0];
+        assert!(
+            (s.curvature - 0.5 / 25.4e-3).abs() < 1e-9,
+            "{}",
+            s.curvature
+        );
+        assert!((s.thickness - 0.25 * 25.4e-3).abs() < 1e-15);
+        assert!((s.semi_diameter - 25.4e-3).abs() < 1e-15);
+    }
+
+    #[test]
+    fn unit_inches_scales_asphere_coefficients_to_mm() {
+        // z = a·r⁴ with z, r in inches. In mm: a_mm = a·25.4^(1−4) = a/25.4³.
+        let doc = parse("MODE SEQ\nUNIT IN\nSURF\nTYPE EVENASPH\nPARM 1 2.0\n").unwrap();
+        let expected = 2.0 / 25.4_f64.powi(3);
+        assert!((doc.surfaces[0].asphere[1] - expected).abs() < 1e-15);
+    }
+
+    #[test]
+    fn unit_after_a_surface_is_an_error() {
+        let err = parse("MODE SEQ\nSURF\nUNIT IN\n").unwrap_err();
+        assert_eq!(err.line, 3, "{err}");
+    }
+
+    #[test]
+    fn unknown_unit_is_an_error() {
+        let err = parse("MODE SEQ\nUNIT FURLONGS\nSURF\n").unwrap_err();
+        assert_eq!(err.line, 2, "{err}");
+    }
+
+    #[test]
+    fn quoted_names_and_glasses_are_unquoted() {
+        let text = "MODE SEQ\nNAME \"my lens\"\nSURF\nGLAS \"N-BK7\" 0 0 0 0\nCURV 0\n";
+        let doc = parse(text).unwrap();
+        assert_eq!(doc.name, "my lens");
+        assert_eq!(doc.surfaces[0].glass, "N-BK7");
     }
 
     #[test]
@@ -646,16 +793,17 @@ mod unsupported_and_precision_tests {
 
     #[test]
     fn asphere_coefficients_survive_write_and_parse_exactly() {
-        // Writing with {:.12} rounded these to 12 decimals.
+        // Writing with {:.12} rounded these to 12 decimals. Index 0 (the r²
+        // term) has no PARM line, so it is not in this round trip.
         let mut doc = ZmxDocument::default();
         let mut s = ZmxSurface {
             curvature: 10.0,
             ..ZmxSurface::default()
         };
         s.asphere = [
+            0.0,
             1.234_567_890_123_45e-9,
             -3.141_592_653_589_79e-6,
-            0.0,
             0.0,
             0.0,
             0.0,
@@ -749,5 +897,26 @@ SURF
             "{}",
             err.message
         );
+    }
+}
+
+#[cfg(test)]
+mod infinite_gap_tests {
+    use super::*;
+
+    #[test]
+    fn infinite_gap_before_the_last_surface_is_an_error() {
+        // DISZ INFINITY is only meaningful for the object surface. On a lens
+        // surface it used to give NaN positions.
+        let text = "MODE SEQ\nSURF\nDISZ INFINITY\nSURF\nDISZ INFINITY\nSURF\nDISZ 0\n";
+        let doc = parse(text).unwrap();
+        let err = to_sequential(
+            &doc,
+            &crate::glass::reference_catalog(),
+            Wavelength::from_nm(587.6),
+            Kelvin::from_celsius(20.0),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("infinite"), "{err}");
     }
 }

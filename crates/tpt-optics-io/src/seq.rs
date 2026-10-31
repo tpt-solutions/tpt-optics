@@ -1,9 +1,12 @@
 //! CODE V `.seq` sequence files (common subset).
 //!
-//! Supported commands: `LEN NEW` (header), `SO` (object surface),
-//! `S <radius> <thickness> <glass>` / `S <radius> <thickness>` (surfaces;
-//! radius 0 = flat, `INF` radius supported), `STO` (stop flag on the next
-//! surface), `EFI`/`GO`/etc. are tolerated and ignored.
+//! Supported commands: `LEN NEW` (header), `SO` (object surface, which must
+//! come first), `S <radius> <thickness> <glass>` / `S <radius> <thickness>`
+//! (surfaces; radius 0 = flat, `INF` radius supported), `STO` (stop flag on
+//! the next surface). Settings `DIM`, `WL`, `EPD`, `YAN`, `LEN`, `GO`, `EFI`,
+//! `EFL`, `TITLE` and `RMS` are tolerated and ignored. `RDY`, `THI` and `GLA`
+//! change a surface's geometry, so they are errors. `!` starts a comment.
+//! Mirrors keep the ray in its medium, as in the zmx reader.
 
 use std::string::{String, ToString};
 use std::vec::Vec;
@@ -37,15 +40,27 @@ pub fn parse(text: &str) -> Result<Vec<(f64, f64, String, bool)>, SeqError> {
     let mut stop_next = false;
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx + 1;
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('!') || line.starts_with('#') {
+        // `!` starts a comment, whole-line or trailing.
+        let line = raw.split('!').next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let mut tokens = line.split_whitespace();
         let cmd = tokens.next().unwrap_or("").to_ascii_uppercase();
         let args: Vec<&str> = tokens.collect();
         match cmd.as_str() {
-            "LEN" | "GO" | "EFI" | "EFL" | "TITLE" | "RMS" | " ref" => {}
+            // Settings that do not change the prescription.
+            "LEN" | "GO" | "EFI" | "EFL" | "TITLE" | "RMS" | "DIM" | "WL" | "EPD" | "YAN" => {}
+            "RDY" | "THI" | "GLA" => {
+                // Per-surface setters change the geometry, so ignoring them
+                // would give a different lens without a warning.
+                return Err(SeqError {
+                    line: line_no,
+                    message: std::format!(
+                        "command '{cmd}' is not supported; write the surface as S"
+                    ),
+                });
+            }
             "SO" => {
                 // Object surface: radius and thickness to the first surface.
                 let r = parse_radius(args.first(), line_no)?;
@@ -58,6 +73,12 @@ pub fn parse(text: &str) -> Result<Vec<(f64, f64, String, bool)>, SeqError> {
             }
             "STO" => stop_next = true,
             "S" => {
+                if out.is_empty() {
+                    return Err(SeqError {
+                        line: line_no,
+                        message: "the sequence must start with SO (the object surface)".into(),
+                    });
+                }
                 let r = parse_radius(args.first(), line_no)?;
                 let t = if args.len() > 1 {
                     parse_len(args.get(1), line_no)?
@@ -158,6 +179,8 @@ pub fn to_sequential(
     let mut sys = SequentialSystem::new();
     sys.media[0] = Medium::Const(1.0);
     let n = surfaces.len();
+    // The medium the ray is travelling in, starting in object-space air.
+    let mut travelling = Medium::Const(1.0);
     for (i, (r, t, glass, _stop)) in surfaces.iter().enumerate() {
         let is_object = i == 0;
         let is_last = i + 1 == n;
@@ -166,12 +189,12 @@ pub fn to_sequential(
             // placing a flat "surface 0" at the origin and shifting.
             continue;
         }
-        // Air outside the last surface, as in the zmx reader.
-        let medium_after = if is_last
-            || glass.is_empty()
-            || glass.eq_ignore_ascii_case("AIR")
-            || glass.to_ascii_uppercase().starts_with("MIRROR")
-        {
+        let is_mirror = glass.to_ascii_uppercase().starts_with("MIRROR");
+        // Air outside the last surface, as in the zmx reader. A mirror
+        // reflects, so the ray stays in the medium it was travelling in.
+        let medium_after = if is_mirror {
+            travelling.clone()
+        } else if is_last || glass.is_empty() || glass.eq_ignore_ascii_case("AIR") {
             Medium::Const(1.0)
         } else {
             resolve(glass).ok_or(SeqError {
@@ -179,7 +202,8 @@ pub fn to_sequential(
                 message: std::format!("glass '{glass}' unresolved"),
             })?
         };
-        let action = if glass.to_ascii_uppercase().starts_with("MIRROR") {
+        travelling = medium_after.clone();
+        let action = if is_mirror {
             SurfaceAction::Reflect
         } else {
             SurfaceAction::Refract
@@ -195,6 +219,10 @@ pub fn to_sequential(
         let thickness = if is_last { 0.0 } else { *t };
         sys.push(surface, thickness, medium_after);
     }
+    sys.validate().map_err(|e| SeqError {
+        line: 0,
+        message: e.to_string(),
+    })?;
     Ok(sys)
 }
 
@@ -280,5 +308,59 @@ GO
     fn utf8_bom_is_ignored() {
         let s = parse("\u{feff}LEN NEW\nSO INF 10\nS 100 5\nGO\n").unwrap();
         assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn settings_commands_are_tolerated() {
+        // DIM, WL, EPD and YAN set units, wavelengths and the aperture. They
+        // do not change the prescription, so they are ignored.
+        let text = "LEN NEW\nDIM M\nWL 587.6\nEPD 10\nYAN 0\nSO INF 10\nS 100 5\nGO\n";
+        assert_eq!(parse(text).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn geometry_setter_commands_are_errors() {
+        // RDY, THI and GLA set one surface's radius, thickness or glass.
+        // Ignoring them would silently change the lens.
+        for cmd in ["RDY", "THI", "GLA"] {
+            let text = std::format!("SO INF 10\nS 100 5\n{cmd} 3\nS INF 0\n");
+            assert!(parse(&text).is_err(), "accepted {cmd}");
+        }
+    }
+
+    #[test]
+    fn inline_comments_are_stripped() {
+        let s = parse("SO INF 10 ! object\nS 100 5 N-BK7 ! front\nS INF 0\n").unwrap();
+        assert_eq!(s[1].2, "N-BK7");
+        assert_eq!(s.len(), 3);
+    }
+
+    #[test]
+    fn sequence_without_so_is_an_error() {
+        // Without SO the first S would be taken as the object and dropped.
+        let err = parse("S 100 5\nS INF 0\n").unwrap_err();
+        assert_eq!(err.line, 1, "{err}");
+    }
+
+    #[test]
+    fn mirror_keeps_the_ray_in_its_medium() {
+        // As in the zmx reader: a mirror reflects, so the medium after it is
+        // the glass the ray was travelling in.
+        let s = parse("SO INF 10\nS 100 5 N-BK7\nS INF 5 MIRROR\nS INF 0\n").unwrap();
+        let sys = to_sequential(&s, |_| Some(Medium::Const(1.5168))).unwrap();
+        assert!(matches!(sys.media[2], Medium::Const(v) if v == 1.5168));
+        assert_eq!(sys.surfaces[1].action, SurfaceAction::Reflect);
+    }
+}
+
+#[cfg(test)]
+mod infinite_gap_tests {
+    use super::*;
+
+    #[test]
+    fn infinite_gap_before_the_last_surface_is_an_error() {
+        let s = parse("SO INF 10\nS 100 INF\nS INF 0\n").unwrap();
+        let err = to_sequential(&s, |_| Some(Medium::Const(1.5))).unwrap_err();
+        assert!(err.message.contains("infinite"), "{err}");
     }
 }

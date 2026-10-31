@@ -37,29 +37,55 @@ const FORMULA_COEFFICIENTS: usize = 6;
 #[derive(Default, Clone, Debug)]
 struct AgfGlass {
     name: String,
+    /// Line of the record's `NM` line, for error messages.
+    line: usize,
     /// Dispersion formula number from the `NM` line.
     formula: Option<u32>,
     /// `CD` coefficients in file order, collected across all `CD` lines.
     cd: Vec<f64>,
+    /// Thermal coefficient dn/dT (1/K) from the `TD` line.
     dn_dtemp: f64,
+    /// Validity range (nm) from the `LD` line.
+    validity_nm: Option<(f64, f64)>,
 }
 
-/// Parse AGF text into a material database.
+/// A catalogue read from AGF text, with the glasses that could not be loaded.
+#[derive(Debug, Default)]
+pub struct AgfCatalog {
+    /// Glasses that loaded.
+    pub db: MaterialDatabase,
+    /// Glasses left out, one error each. The error's line is the record's
+    /// `NM` line and its message says why: an unsupported dispersion formula,
+    /// no dispersion data, or the wrong number of coefficients.
+    pub skipped: Vec<AgfError>,
+}
+
+/// Parse AGF text into a material database. Glasses that cannot be loaded are
+/// left out; [`parse_agf_report`] lists them.
+///
+/// Malformed lines are errors, not skipped glasses: a non-numeric token, a
+/// `CD` line that overruns six coefficients, or a bad `NM` formula number.
 ///
 /// The `NM` line gives the dispersion formula number as its second field.
 /// Formula 1 (Schott) and formula 2 (Sellmeier) are supported. Other formula
-/// numbers are an error rather than being read as Sellmeier.
+/// numbers are skipped rather than being read as Sellmeier.
 ///
 /// For formula 2 the `CD` coefficients are `K1 L1 K2 L2 K3 L3` (with `L` in
 /// µm²). For formula 1 they are `A0 … A5`. A `CD` record may wrap across
 /// several lines. Non-numeric or non-finite tokens are errors.
 ///
-/// `TD` (thermal) and `CC` (concatenation) lines are recognised and skipped.
-/// The temperature coefficient comes from the `ED` line.
+/// `TD` gives the thermal coefficient (its first value `D0` is in units of
+/// 10⁻⁶ K⁻¹) and `LD` the validity range in µm. `ED` (extended data) and `CC`
+/// (concatenation) are recognised and skipped.
 pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
+    parse_agf_report(text).map(|cat| cat.db)
+}
+
+/// Like [`parse_agf`], but also returns the glasses that were skipped.
+pub fn parse_agf_report(text: &str) -> Result<AgfCatalog, AgfError> {
     // A UTF-8 byte-order mark is not part of the first keyword.
     let text = text.trim_start_matches('\u{feff}');
-    let mut db = MaterialDatabase::new();
+    let mut cat = AgfCatalog::default();
     let mut current: Option<AgfGlass> = None;
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx + 1;
@@ -82,7 +108,7 @@ pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
         match key.as_str() {
             "NM" => {
                 if let Some(g) = current.take() {
-                    finish_glass(&mut db, &g, line_no)?;
+                    store(&mut cat, &g);
                 }
                 let name = args.first().copied().unwrap_or("unnamed").to_string();
                 let formula = match args.get(1) {
@@ -94,17 +120,24 @@ pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
                 };
                 current = Some(AgfGlass {
                     name,
+                    line: line_no,
                     formula,
                     ..AgfGlass::default()
                 });
             }
-            "ED" => {
-                // Extended data: position 6 (index 5) is dn/dT in some
-                // catalogs; tolerated if absent.
-                if let Ok(v) = num(5) {
-                    if let Some(g) = current.as_mut() {
-                        g.dn_dtemp = v;
-                    }
+            "TD" => {
+                // D0 is in units of 10⁻⁶ K⁻¹; the other thermal terms are not
+                // modelled, so the value is an approximation near room
+                // temperature.
+                let d0 = num(0)?;
+                if let Some(g) = current.as_mut() {
+                    g.dn_dtemp = d0 * 1e-6;
+                }
+            }
+            "LD" => {
+                let (lo, hi) = (num(0)?, num(1)?);
+                if let Some(g) = current.as_mut() {
+                    g.validity_nm = Some((lo * 1e3, hi * 1e3)); // µm → nm
                 }
             }
             "CD" => {
@@ -135,17 +168,29 @@ pub fn parse_agf(text: &str) -> Result<MaterialDatabase, AgfError> {
                     });
                 }
             }
-            _ => {} // GC (comments), TD, CC, OD, etc. are recognised and skipped
+            _ => {} // GC (comments), ED, CC, OD, etc. are recognised and skipped
         }
     }
     if let Some(g) = current.take() {
-        finish_glass(&mut db, &g, text.lines().count())?;
+        store(&mut cat, &g);
     }
-    Ok(db)
+    Ok(cat)
 }
 
-fn finish_glass(db: &mut MaterialDatabase, g: &AgfGlass, line: usize) -> Result<(), AgfError> {
-    let fail = |message: std::string::String| AgfError { line, message };
+/// Add a finished record to the catalogue, or note why it was skipped.
+fn store(cat: &mut AgfCatalog, g: &AgfGlass) {
+    match build(g) {
+        Ok(material) => cat.db.insert(material),
+        Err(e) => cat.skipped.push(e),
+    }
+}
+
+/// Build the material for one record, or say why the record cannot be used.
+fn build(g: &AgfGlass) -> Result<Material, AgfError> {
+    let fail = |message: std::string::String| AgfError {
+        line: g.line,
+        message,
+    };
     if g.name.is_empty() {
         return Err(fail("glass without a name".into()));
     }
@@ -177,13 +222,16 @@ fn finish_glass(db: &mut MaterialDatabase, g: &AgfGlass, line: usize) -> Result<
     } else {
         std::boxed::Box::new(Sellmeier::new([c[0], c[2], c[4]], [c[1], c[3], c[5]]))
     };
-    db.insert(Material::new(
+    let material = Material::new(
         g.name.clone(),
         dispersion,
         g.dn_dtemp,
         REFERENCE_TEMPERATURE,
-    ));
-    Ok(())
+    );
+    Ok(match g.validity_nm {
+        Some((lo, hi)) => material.with_validity(lo, hi),
+        None => material,
+    })
 }
 
 /// Embedded reference glass catalog: a handful of well-known glasses with
@@ -278,9 +326,10 @@ TD 0.0 0.0 0.0 3.0e-6
     }
 
     #[test]
-    fn glass_without_data_rejected() {
-        let err = parse_agf("NM EMPTY 1 1 1 1 0 0 0\n").unwrap_err();
-        assert!(err.message.contains("no dispersion"));
+    fn glass_without_data_is_skipped_with_a_reason() {
+        let cat = parse_agf_report("NM EMPTY 1 1 1 1 0 0 0\n").unwrap();
+        assert!(cat.db.is_empty());
+        assert!(cat.skipped[0].message.contains("no dispersion"));
     }
 
     #[test]
@@ -321,11 +370,57 @@ TD 0.0 0.0 0.0 3.0e-6
     }
 
     #[test]
-    fn unsupported_dispersion_formula_is_an_error() {
-        // Formula 4 is not implemented. It must not be read as Sellmeier.
-        let text = "NM X 4 0 1.5 60\nCD 1 0.01 0.2 0.02 1 100\n";
-        let err = parse_agf(text).unwrap_err();
-        assert!(err.message.contains("formula"), "{err}");
+    fn unsupported_dispersion_formula_skips_only_that_glass() {
+        // Formula 4 is not implemented. It must not be read as Sellmeier, and
+        // it must not take the rest of the catalogue down with it.
+        let text = "NM X 4 0 1.5 60\nCD 1 0.01 0.2 0.02 1 100\n\
+                    NM S 1 0 1.5 60\nCD 2.3 0.01 0 0 0 0\n";
+        let cat = parse_agf_report(text).unwrap();
+        assert!(cat.db.get("S").is_some());
+        assert!(cat.db.get("X").is_none());
+        assert_eq!(cat.skipped.len(), 1);
+        assert!(
+            cat.skipped[0].message.contains("formula"),
+            "{}",
+            cat.skipped[0]
+        );
+    }
+
+    #[test]
+    fn skipped_glass_error_names_its_own_nm_line() {
+        // The error for the last record used to point at the end of the file.
+        let text = "NM S 1 0 1.5 60\nCD 2.3 0.01 0 0 0 0\nNM X 7\nCD 1 2 3 4 5 6\n";
+        let cat = parse_agf_report(text).unwrap();
+        assert_eq!(cat.skipped.len(), 1);
+        assert_eq!(cat.skipped[0].line, 3, "{}", cat.skipped[0]);
+    }
+
+    #[test]
+    fn td_line_gives_the_thermal_coefficient() {
+        // TD D0 …: D0 is in units of 10⁻⁶ K⁻¹, so 1.86 is 1.86e-6 per kelvin.
+        let cat =
+            parse_agf_report("NM S 1 0 1.5 60\nCD 2.3 0.01 0 0 0 0\nTD 1.86 0 0 0 0 0\n").unwrap();
+        let dn = cat.db.get("S").unwrap().dn_dtemp();
+        assert!((dn - 1.86e-6).abs() < 1e-18, "{dn}");
+    }
+
+    #[test]
+    fn ed_line_is_not_read_as_the_thermal_coefficient() {
+        // ED field 5 is not dn/dT, so an ED line must leave it at zero.
+        let cat =
+            parse_agf_report("NM S 1 0 1.5 60\nCD 2.3 0.01 0 0 0 0\nED 1 2 3 4 9 6\n").unwrap();
+        assert_eq!(cat.db.get("S").unwrap().dn_dtemp(), 0.0);
+    }
+
+    #[test]
+    fn ld_line_sets_the_validity_range() {
+        // LD gives the range in µm; the material reports it in nm.
+        let cat = parse_agf_report("NM S 1 0 1.5 60\nCD 2.3 0.01 0 0 0 0\nLD 0.3 2.5\n").unwrap();
+        let (lo, hi) = cat.db.get("S").unwrap().validity_nm().unwrap();
+        assert!(
+            (lo - 300.0).abs() < 1e-9 && (hi - 2500.0).abs() < 1e-9,
+            "{lo} {hi}"
+        );
     }
 
     #[test]
